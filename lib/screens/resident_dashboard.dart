@@ -7,6 +7,7 @@ import '../utils/app_theme.dart';
 import 'resident_track_truck_screen.dart';
 import 'resident_complaints_screen.dart';
 import 'resident_settings_screen.dart';
+import '../widgets/mapbox_view.dart';
 
 class ResidentDashboard extends StatefulWidget {
   const ResidentDashboard({super.key});
@@ -22,6 +23,8 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
   int _unreadNotificationsCount = 0;
   int _selectedIndex = 0;
   int _userRating = 0;
+  bool _hasRated = false;
+  final TextEditingController _ratingCommentController = TextEditingController();
 
   @override
   void initState() {
@@ -29,12 +32,27 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
     _loadUser();
   }
 
+  @override
+  void dispose() {
+    _ratingCommentController.dispose();
+    super.dispose();
+  }
+
   void _loadUser() async {
     _user = await SessionManager.getUser();
     if (_user != null) {
       _setupListeners();
+      _checkRatingStatus();
     }
     if (mounted) setState(() {});
+  }
+
+  void _checkRatingStatus() async {
+    if (_user == null) return;
+    final snapshot = await _database.ref('user_ratings/${_user!.userId}').get();
+    if (snapshot.exists) {
+      if (mounted) setState(() => _hasRated = true);
+    }
   }
 
   void _setupListeners() {
@@ -246,11 +264,21 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                   ),
                 ),
                 Container(
-                  height: 160,
+                  height: 180,
                   width: double.infinity,
                   margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                  decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), color: const Color(0xFFF5F5F5)),
-                  child: const Center(child: Icon(Icons.map_outlined, color: Colors.black12, size: 40)),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20), 
+                    color: const Color(0xFFF5F5F5),
+                    border: Border.all(color: Colors.grey.shade100),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: MapboxView(
+                      mode: 'dashboard',
+                      onTap: () => setState(() => _selectedIndex = 1),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -260,7 +288,10 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
           _buildSectionTitle("Quick Actions"),
           _buildActionCard("Track Trucks", "Check location on map", Icons.map_outlined, const Color(0xFF1E88E5), const Color(0xFFE3F2FD), () => setState(() => _selectedIndex = 1)),
           _buildActionCard("Report Issue", "File a system complaint", Icons.error_outline_rounded, const Color(0xFFFF1744), const Color(0xFFFFF0F2), () => Navigator.pushNamed(context, '/file_complaint')),
-          _buildActionCard("Service Quality", "Rate your experience", Icons.star_outline_rounded, const Color(0xFF9C27B0), const Color(0xFFF3E5F5), () => _showRateServiceModal(context)),
+          
+          // Service Quality Rating - Only appears once
+          if (!_hasRated)
+            _buildActionCard("Service Quality", "Rate your experience", Icons.star_outline_rounded, const Color(0xFF9C27B0), const Color(0xFFF3E5F5), () => _showRateServiceModal(context)),
 
           // 📅 SCHEDULE CARD
           _buildSectionTitle("Regional Schedule"),
@@ -770,9 +801,10 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xFFF0F0F0))),
-                    child: const TextField(
+                    child: TextField(
+                      controller: _ratingCommentController,
                       maxLines: 4,
-                      decoration: InputDecoration(
+                      decoration: const InputDecoration(
                         hintText: "Tell us more... (Optional)",
                         hintStyle: TextStyle(color: Color(0xFFBDBDBD), fontSize: 14),
                         border: InputBorder.none,
@@ -787,7 +819,27 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                       const SizedBox(width: 16),
                       Expanded(
                         child: ElevatedButton(
-                          onPressed: () => Navigator.pop(context),
+                          onPressed: () async {
+                            if (_userRating == 0) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please select a rating star")));
+                              return;
+                            }
+                            
+                            // Save to Firebase
+                            await _database.ref('user_ratings/${_user!.userId}').set({
+                              'rating': _userRating,
+                              'comment': _ratingCommentController.text.trim(),
+                              'userName': _user!.name,
+                              'purok': _user!.purok,
+                              'timestamp': ServerValue.timestamp,
+                            });
+                            
+                            if (mounted) {
+                              setState(() => _hasRated = true);
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Thank you for your feedback!"), backgroundColor: Color(0xFF00BFA5)));
+                            }
+                          },
                           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00BFA5), minimumSize: const Size(0, 56), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
                           child: const Text("SUBMIT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
                         ),

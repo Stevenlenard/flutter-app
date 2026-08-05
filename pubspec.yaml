@@ -17,6 +17,8 @@ dependencies:
   shared_preferences: ^2.2.3
   mapbox_maps_flutter: ^3.0.0-alpha.1
   url_launcher: ^6.3.0
+  geolocator: ^11.0.0
+  permission_handler: ^11.3.1
   pointer_interceptor: ^0.10.1+2
   google_generative_ai: ^0.4.0
   pdf: ^3.11.1

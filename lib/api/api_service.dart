@@ -84,6 +84,30 @@ class ApiService {
     return await _dio.post('update_user_settings.php', data: data);
   }
 
+  Future<Response> updateProfile({
+    required int userId,
+    required String role,
+    required String name,
+    required String phone,
+    String? preferredTruck,
+    String? licenseNumber,
+    String? address,
+    String? email,
+  }) async {
+    final Map<String, dynamic> data = {
+      'user_id': userId,
+      'role': role,
+      'name': name,
+      'phone': phone,
+    };
+    if (preferredTruck != null) data['preferred_truck'] = preferredTruck;
+    if (licenseNumber != null) data['license_number'] = licenseNumber;
+    if (address != null) data['complete_address'] = address;
+    if (email != null) data['email'] = email;
+
+    return await _dio.post('update_user_profile.php', data: data);
+  }
+
   Future<Response> toggle2FA(int userId, bool enabled) async {
     return await _dio.post('toggle_2fa.php', data: {
       'user_id': userId,

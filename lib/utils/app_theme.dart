@@ -30,6 +30,16 @@ class AppColors {
   static const Color statusGreen = Color(0xFF00C853);
   static const Color statusRed = Color(0xFFFF1744);
   static const Color statusYellow = Color(0xFFFFAB00);
+
+  // Redesign Colors
+  static const Color opStart = Color(0xFF00695C);
+  static const Color opPause = Color(0xFFFFA000);
+  static const Color opFull = Color(0xFFE91E63);
+  static const Color opDone = Color(0xFF1976D2);
+
+  static const Color cardAlertBg = Color(0xFFFFF8E1);
+  static const Color cardDemoBg = Color(0xFFF3E5F5);
+  static const Color cardProgressBg = Color(0xFFFFFFFF);
   
   static const Color textGray = Color(0xFF666666);
   static const Color lightGray = Color(0xFFE0E0E0);
