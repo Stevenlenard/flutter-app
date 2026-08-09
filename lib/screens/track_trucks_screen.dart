@@ -353,11 +353,17 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   }
 
   Widget _buildHeader() {
-    return Positioned(top: 0, left: 0, right: 0, child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))]), child: SafeArea(child: Row(children: [if (!widget.isEmbedded || widget.onBack != null) ...[IconButton(icon: const Icon(Icons.arrow_back, color: Color(0xFF1A1A1A)), onPressed: () { if (widget.onBack != null) { widget.onBack!(); } else { Navigator.pop(context); } }), const SizedBox(width: 12)], const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Track Trucks", style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))), Text("Real-time GPS locations", style: TextStyle(fontSize: 12, color: Color(0xFF757575), fontWeight: FontWeight.w500))])]))));
+    return Positioned(top: 0, left: 0, right: 0, child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))]), child: SafeArea(child: Row(children: [if (!widget.isEmbedded || widget.onBack != null) ...[IconButton(icon: const Icon(Icons.arrow_back, color: Color(0xFF1A1A1A)), onPressed: () { if (widget.onBack != null) { widget.onBack!(); } else { Navigator.pop(context); } }), const SizedBox(width: 12)], const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Track Fleet", style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))), Text("Real-time GPS status", style: TextStyle(fontSize: 12, color: Color(0xFF757575), fontWeight: FontWeight.w500))])]))));
   }
 
   Widget _buildRouteProgress(bool isDesktop) {
-    return Positioned(top: widget.isEmbedded ? 68 : 96, left: 0, right: 0, child: LinearProgressIndicator(value: 0.45, backgroundColor: const Color(0xFFE0E0E0), valueColor: const AlwaysStoppedAnimation(Color(0xFF2196F3)), minHeight: 4));
+    // Calculate actual progress based on puroks completed if available, or just hide if no active truck
+    double progress = 0.0;
+    if (_trucks.isNotEmpty) {
+      int active = _trucks.where((t) => t['isOnline'] == true).length;
+      progress = active > 0 ? 0.3 : 0.0; // Placeholder for overall fleet progress
+    }
+    return Positioned(top: widget.isEmbedded ? 68 : 96, left: 0, right: 0, child: LinearProgressIndicator(value: progress, backgroundColor: const Color(0xFFE0E0E0), valueColor: const AlwaysStoppedAnimation(Color(0xFF2196F3)), minHeight: 4));
   }
 
   Widget _buildFleetStatusContent(ScrollController? scrollController, {bool isMobile = false}) {
@@ -369,7 +375,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
         const SizedBox(height: 24),
         const Padding(padding: EdgeInsets.symmetric(horizontal: 28), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("Fleet Status", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A), letterSpacing: -0.5)), Icon(Icons.local_shipping_rounded, color: Colors.grey)])),
         const SizedBox(height: 20),
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Column(children: _trucks.isEmpty ? [const Padding(padding: EdgeInsets.all(60), child: Center(child: Text("Scanning for active units...", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.w500))))] : _trucks.map((truck) => _buildDetailedTruckCard(truck)).toList())),
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Column(children: _trucks.isEmpty ? [const Padding(padding: EdgeInsets.all(60), child: Center(child: Text("Scanning for active units...", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.w500))))] : _trucks.where((t) => t['isOnline'] == true).map((truck) => _buildDetailedTruckCard(truck)).toList())),
         const SizedBox(height: 24),
         Padding(padding: const EdgeInsets.symmetric(horizontal: 24), child: Container(padding: const EdgeInsets.all(28), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(32), border: Border.all(color: const Color(0xFFF0F0F0))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("Fleet Management Guide", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1A1A1A))), const SizedBox(height: 20), _buildGuideRow("Tap 'History' to view detailed audit trails"), _buildGuideRow("Use 'Compare Path' for AI-optimized routes"), _buildGuideRow("Real-time heatmaps indicate collection speed")]))),
         const SizedBox(height: 120),
@@ -414,7 +420,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     String internalId = (truck['internal_id'] ?? truck['truck_id'] ?? "GT-001").toString();
     String id = (truck['truck_id'] ?? internalId).toString();
     String status = (truck['status'] ?? "Idle").toString().toUpperCase();
-    String driver = (truck['driver_name'] ?? truck['driverName'] ?? "Steve Espaldon").toString();
+    String driver = (truck['driver_name'] ?? truck['driverName'] ?? "Unknown Driver").toString();
     String location = (truck['purok'] ?? "Balintawak").toString();
     String speedStr = truck['speed']?.toString() ?? "0";
     double speedVal = double.tryParse(speedStr) ?? 0.0;
@@ -423,10 +429,10 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     final historyData = truck['route_history'];
     if (historyData is Map) { historyData.forEach((k, v) => historyPoints.add(v as Map)); }
     else if (historyData is List) { for (var p in historyData) { if (p is Map) historyPoints.add(p); } }
-    double distVal = historyPoints.isNotEmpty ? _calculateDistance(historyPoints) : (double.tryParse(truck['distance_covered']?.toString() ?? "3.4") ?? 3.4);
+    double distVal = historyPoints.isNotEmpty ? _calculateDistance(historyPoints) : (double.tryParse(truck['distance_covered']?.toString() ?? "0.0") ?? 0.0);
     String distance = "${distVal.toStringAsFixed(1)} km";
     String fuel = "${(distVal / 5.0).toStringAsFixed(1)} L";
-    String stops = historyPoints.isNotEmpty ? _countStops(historyPoints).toString() : (truck['stops_made']?.toString() ?? "2");
+    String stops = historyPoints.isNotEmpty ? _countStops(historyPoints).toString() : (truck['stops_made']?.toString() ?? "0");
     String eta;
     if (truck['eta_minutes'] != null) { eta = "${truck['eta_minutes']} mins"; }
     else { List<double> recentSpeeds = historyPoints.reversed.take(50).map((p) => (p['speed'] as num? ?? 0.0).toDouble()).toList(); if (recentSpeeds.isEmpty) recentSpeeds = [speedVal > 0 ? speedVal : 25.0]; double estEta = PredictionEngine.estimateArrivalTime(distVal, recentSpeeds); eta = "${estEta.toStringAsFixed(0)} mins"; }

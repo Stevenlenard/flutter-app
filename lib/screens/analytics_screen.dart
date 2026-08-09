@@ -115,16 +115,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     double predictedVol = PredictionEngine.predictWasteVolume(topArea, stopCount: _stopsPerRoute);
     double weeklyVol = PredictionEngine.predictWeeklyVolume(topArea, avgStops: _stopsPerRoute);
     
-    // Calculate ETA for several areas
-    final List<String> targetPuroks = ["Purok 2", "Purok 3", "Purok 4"];
+    // Calculate ETA for nearest trucks if available
     _etaEstimates.clear();
-    for (var p in targetPuroks) {
-       // Mock distance based on Purok name for demo (roughly 1.5km to 4km from center)
-       double dist = (targetPuroks.indexOf(p) + 1) * 1.5;
-       double mins = PredictionEngine.estimateArrivalTime(dist, [25.0, 28.0, 22.0]);
-       DateTime arrival = DateTime.now().add(Duration(minutes: mins.toInt()));
-       _etaEstimates[p] = DateFormat('h:mm a').format(arrival);
-    }
+    // Real ETA values will be populated here based on fleet status in production.
+    // For now, it will remain empty if no trucks are tracked in this screen's context.
 
     if (mounted) {
       setState(() {
@@ -232,7 +226,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       'waste_weekly': wasteWeekly,
       'insight1': _geminiSummary ?? "System performing normally.",
       'insight2': _recommendations,
-      'total_drivers': "2", // Mocked or fetched if available
+      'total_drivers': "0", // Will be updated with real fleet count
     };
 
     final uri = Uri.parse(exportUrl).replace(queryParameters: queryParams);

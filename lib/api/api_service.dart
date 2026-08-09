@@ -238,4 +238,11 @@ class ApiService {
 
     return await _dio.post('notify_admin_issue.php', data: FormData.fromMap(data));
   }
+
+  Future<Response> deleteUser(int userId, String role) async {
+    return await _dio.post('delete_user.php', data: {
+      'user_id': userId,
+      'role': role,
+    });
+  }
 }

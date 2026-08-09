@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:intl/intl.dart';
+import 'package:geolocator/geolocator.dart';
 import '../utils/session_manager.dart';
 import '../models/user.dart';
 import '../utils/app_theme.dart';
@@ -20,21 +22,58 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
   final FirebaseDatabase _database = FirebaseDatabase.instance;
   UserData? _user;
   int _activeTrucks = 0;
+  int _totalTrucks = 0;
   int _unreadNotificationsCount = 0;
   int _selectedIndex = 0;
   int _userRating = 0;
   bool _hasRated = false;
+  String _etaText = "--";
+  String _scheduleFrequency = "Daily";
+  String _scheduleTimeWindow = "8:00 AM – 12:00 PM";
   final TextEditingController _ratingCommentController = TextEditingController();
+
+  final Map<String, Map<String, double>> _purokCoordinates = {
+    "Purok 1": {"lat": 13.9450, "lng": 121.1650},
+    "Purok 2": {"lat": 13.9440, "lng": 121.1640},
+    "Purok 3": {"lat": 13.9430, "lng": 121.1630},
+    "Purok 4": {"lat": 13.9420, "lng": 121.1620},
+    "Dos Riles": {"lat": 13.9410, "lng": 121.1610},
+    "Sentro": {"lat": 13.9400, "lng": 121.1600},
+    "San Isidro": {"lat": 13.9390, "lng": 121.1590},
+    "Paraiso": {"lat": 13.9380, "lng": 121.1580},
+    "Riverside": {"lat": 13.9370, "lng": 121.1570},
+    "Kalaw Street": {"lat": 13.9360, "lng": 121.1560},
+    "Home Subdivision": {"lat": 13.9350, "lng": 121.1550},
+    "Tanco Road / Ayala Highway": {"lat": 13.9340, "lng": 121.1540},
+    "Brixton Area": {"lat": 13.9330, "lng": 121.1530},
+  };
+
+  StreamSubscription? _truckSubscription;
+  StreamSubscription? _notificationSubscription;
+  StreamSubscription? _scheduleSubscription;
+  StreamSubscription? _todayTripSubscription;
+  StreamSubscription? _totalTruckSubscription;
+
+  String? _todayTripId;
+  String _actualStartTime = "Not started";
+  String _predictedEndTime = "";
+  double _historicalAvgDurationMinutes = 210.0; // Default 3.5 hours
 
   @override
   void initState() {
     super.initState();
     _loadUser();
+    _calculateHistoricalAverage();
   }
 
   @override
   void dispose() {
     _ratingCommentController.dispose();
+    _truckSubscription?.cancel();
+    _notificationSubscription?.cancel();
+    _scheduleSubscription?.cancel();
+    _todayTripSubscription?.cancel();
+    _totalTruckSubscription?.cancel();
     super.dispose();
   }
 
@@ -43,8 +82,100 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
     if (_user != null) {
       _setupListeners();
       _checkRatingStatus();
+      _listenToTodayTrip();
     }
     if (mounted) setState(() {});
+  }
+
+  Future<void> _calculateHistoricalAverage() async {
+    try {
+      final snapshot = await _database.ref('driver_routes').get();
+      if (snapshot.exists) {
+        final Map data = snapshot.value as Map;
+        List<int> durations = [];
+        
+        data.forEach((key, value) {
+          if (value['route_status'] == 'COMPLETED' || value['route_status'] == 'FINISHED') {
+             final String? start = value['start_time'];
+             final String? end = value['end_time'];
+             if (start != null && end != null) {
+                try {
+                  final DateFormat format = DateFormat('h:mm a');
+                  final DateTime startTime = format.parse(start);
+                  final DateTime endTime = format.parse(end);
+                  int diff = endTime.difference(startTime).inMinutes;
+                  if (diff > 0 && diff < 600) { // Valid duration < 10h
+                    durations.add(diff);
+                  }
+                } catch (e) {}
+             }
+          }
+        });
+        
+        if (durations.isNotEmpty) {
+          _historicalAvgDurationMinutes = durations.reduce((a, b) => a + b) / durations.length;
+        }
+      }
+    } catch (e) {}
+  }
+
+  void _listenToTodayTrip() {
+    final String todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    _todayTripSubscription?.cancel();
+    _todayTripSubscription = _database.ref('driver_routes')
+      .orderByChild('date')
+      .equalTo(todayStr)
+      .onValue.listen((event) {
+        if (event.snapshot.exists && event.snapshot.value != null) {
+          final Map data = event.snapshot.value as Map;
+          Map? relevantTrip;
+          
+          data.forEach((key, value) {
+            if (relevantTrip == null || value['route_status'] == 'ACTIVE') {
+              relevantTrip = value;
+              relevantTrip!['id'] = key;
+            }
+          });
+
+          if (relevantTrip != null) {
+            _todayTripId = relevantTrip!['id'];
+            final String? startTimeStr = relevantTrip!['start_time'];
+            final String status = relevantTrip!['route_status'] ?? "";
+            
+            if (mounted) {
+              setState(() {
+                if (startTimeStr != null) {
+                  _actualStartTime = startTimeStr;
+                  if (status == 'COMPLETED' || status == 'FINISHED') {
+                    _predictedEndTime = relevantTrip!['end_time'] ?? "";
+                  } else {
+                    try {
+                      final DateFormat format = DateFormat('h:mm a');
+                      DateTime startDateTime = format.parse(startTimeStr);
+                      final now = DateTime.now();
+                      DateTime pred = DateTime(now.year, now.month, now.day, startDateTime.hour, startDateTime.minute)
+                          .add(Duration(minutes: _historicalAvgDurationMinutes.round()));
+                      _predictedEndTime = format.format(pred);
+                    } catch (e) {
+                      _predictedEndTime = "";
+                    }
+                  }
+                } else {
+                  _actualStartTime = "Waiting for driver";
+                  _predictedEndTime = "";
+                }
+              });
+            }
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _actualStartTime = "Not started";
+              _predictedEndTime = "";
+            });
+          }
+        }
+      });
   }
 
   void _checkRatingStatus() async {
@@ -56,26 +187,101 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
   }
 
   void _setupListeners() {
-    _database.ref('truck_locations').onValue.listen((event) {
+    _truckSubscription?.cancel();
+    _truckSubscription = _database.ref('truck_locations').onValue.listen((event) {
       if (event.snapshot.exists) {
-        final Map data = event.snapshot.value as Map;
+        final dynamic data = event.snapshot.value;
+        Map<dynamic, dynamic> dataMap = {};
+        if (data is Map) {
+          dataMap = data;
+        } else if (data is List) {
+          for (int i = 0; i < data.length; i++) {
+            if (data[i] != null) dataMap[i.toString()] = data[i];
+          }
+        }
+
+        final Map<String, Map<dynamic, dynamic>> activeTrucksMap = {};
+        
+        dataMap.forEach((key, value) {
+          final val = value as Map;
+          final status = (val['status'] ?? '').toString().toUpperCase();
+          final bool isOnline = val['isOnline'] == true;
+          final String rawTruckId = (val['truck_id'] ?? key.toString());
+          final String truckId = rawTruckId.toUpperCase().trim();
+
+          bool isFresh = true;
+          if (val['lastSeen'] != null) {
+            final int lastSeen = int.tryParse(val['lastSeen'].toString()) ?? 0;
+            final int now = DateTime.now().millisecondsSinceEpoch;
+            if (now - lastSeen > 300000) isFresh = false;
+          }
+
+          if (isOnline && isFresh && (status == 'ACTIVE' || status == 'COLLECTING' || status == 'IDLE' || status == 'FULL')) {
+            if (!activeTrucksMap.containsKey(truckId)) {
+              activeTrucksMap[truckId] = val;
+            } else {
+              final existing = activeTrucksMap[truckId]!;
+              final existingTime = DateTime.tryParse(existing['updatedAt'] ?? '') ?? DateTime(2000);
+              final newTime = DateTime.tryParse(val['updatedAt'] ?? '') ?? DateTime(2000);
+              if (newTime.isAfter(existingTime)) activeTrucksMap[truckId] = val;
+            }
+          }
+        });
+
         if (mounted) {
           setState(() {
-            _activeTrucks = data.values.where((t) => t['status'] == 'active').length;
+            _activeTrucks = activeTrucksMap.length;
+            _calculateBestETA(activeTrucksMap.values.map((v) => v as Map).toList());
           });
+          debugPrint("[TRUCK COUNT DEBUG] Active count from truck_locations: $_activeTrucks");
         }
+      } else {
+        if (mounted) setState(() => _activeTrucks = 0);
       }
     });
 
-    // Count unread notifications
-    _database.ref('notifications').onValue.listen((event) {
+    // Listen to 'trucks' node for total registered trucks
+    _totalTruckSubscription?.cancel();
+    _totalTruckSubscription = _database.ref('trucks').onValue.listen((event) {
+      if (event.snapshot.exists) {
+        final dynamic data = event.snapshot.value;
+        int count = 0;
+        if (data is Map) {
+          count = data.length;
+        } else if (data is List) {
+          count = data.where((e) => e != null).length;
+        }
+        if (mounted) {
+          setState(() => _totalTrucks = count);
+          debugPrint("[TRUCK COUNT DEBUG] Total registered trucks from 'trucks' node: $_totalTrucks");
+        }
+      } else {
+        // Fallback: use truck_locations to count total unique trucks ever seen
+        _database.ref('truck_locations').get().then((snap) {
+          if (snap.exists) {
+            final Map data = snap.value as Map;
+            final Set<String> uniqueIds = {};
+            data.forEach((k, v) {
+              final val = v as Map;
+              uniqueIds.add((val['truck_id'] ?? k.toString()).toUpperCase().trim());
+            });
+            if (mounted) setState(() => _totalTrucks = uniqueIds.length);
+          }
+        });
+      }
+    });
+
+    _notificationSubscription?.cancel();
+    _notificationSubscription = _database.ref('notifications').onValue.listen((event) {
       if (event.snapshot.exists) {
         final Map data = event.snapshot.value as Map;
         int unread = 0;
         data.forEach((key, value) {
-          if (value['isRead'] == false) {
-             final String targetPurok = (value['purok'] ?? '').toString();
-             if (targetPurok == '' || targetPurok == _user?.purok) {
+          final val = value as Map;
+          if (val['isRead'] == false) {
+             final String targetPurok = (val['purok'] ?? val['area'] ?? '').toString();
+             final String? resId = val['residentId']?.toString();
+             if (targetPurok == '' || targetPurok == _user?.purok || resId == _user?.userId) {
                unread++;
              }
           }
@@ -88,40 +294,107 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
       }
     });
 
-    // Real-time Notification Listener
-    _database.ref('notifications').onChildAdded.listen((event) async {
-      if (event.snapshot.exists) {
-        final data = event.snapshot.value as Map;
-        final bool isEnabled = await SessionManager.isAppNotificationsEnabled();
-        
-        if (isEnabled && mounted) {
-          // Check if it's for this resident's purok or a general alert
-          final String targetPurok = (data['purok'] ?? '').toString();
-          if (targetPurok == '' || targetPurok == _user?.purok) {
-            _showInAppNotification(data['title'] ?? 'Alert', data['message'] ?? '');
+    if (_user?.purok != null) {
+      _scheduleSubscription?.cancel();
+      _scheduleSubscription = _database.ref('collection_schedules/${_user!.purok}').onValue.listen((event) {
+        if (event.snapshot.exists) {
+          final Map data = event.snapshot.value as Map;
+          if (mounted) {
+            setState(() {
+              _scheduleFrequency = data['frequency'] ?? "Daily";
+            });
           }
         }
-      }
-    });
+      });
+    }
   }
 
-  void _showInAppNotification(String title, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-            Text(message, style: const TextStyle(fontSize: 12)),
-          ],
-        ),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: const Color(0xFF00BFA5),
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(label: 'DISMISS', textColor: Colors.white, onPressed: () {}),
-      ),
-    );
+  Future<void> _markAsRead(String id) async {
+    await _database.ref('notifications/$id').update({'isRead': true});
+  }
+
+  Future<void> _markAllAsRead() async {
+    final snapshot = await _database.ref('notifications').get();
+    if (snapshot.exists) {
+      final Map data = snapshot.value as Map;
+      final updates = <String, dynamic>{};
+      data.forEach((k, v) {
+        final val = v as Map;
+        final String targetPurok = (val['purok'] ?? val['area'] ?? '').toString();
+        final String? resId = val['residentId']?.toString();
+        if (val['isRead'] == false && (targetPurok == '' || targetPurok == _user?.purok || resId == _user?.userId)) {
+          updates['notifications/$k/isRead'] = true;
+        }
+      });
+      if (updates.isNotEmpty) {
+        await _database.ref().update(updates);
+      }
+    }
+  }
+
+  void _calculateBestETA(List<Map> activeTrucks) {
+    if (_user == null || _user!.purok == null || activeTrucks.isEmpty) {
+      if (mounted) setState(() => _etaText = "No active collection");
+      return;
+    }
+
+    final myPurok = _purokCoordinates[_user!.purok];
+    if (myPurok == null) {
+      if (mounted) setState(() => _etaText = "--");
+      return;
+    }
+
+    double bestTimeMinutes = double.infinity;
+    String statusNote = "";
+
+    for (var truck in activeTrucks) {
+      final double truckLat = (truck['latitude'] ?? 0.0).toDouble();
+      final double truckLng = (truck['longitude'] ?? 0.0).toDouble();
+      final double truckSpeed = (truck['speed'] ?? 0.0).toDouble();
+      final String truckStatus = (truck['status'] ?? '').toString().toUpperCase();
+
+      if (truckLat == 0 || truckLng == 0) continue;
+
+      double distForEta = (truck['distance'] ?? 0.0).toDouble();
+      if (distForEta <= 0) distForEta = 2.5;
+
+      double speedForCalc = truckSpeed > 5 ? truckSpeed : 15.0;
+      double timeHours = distForEta / speedForCalc;
+      double timeMinutes = timeHours * 60;
+
+      if (truckStatus == 'IDLE') {
+        timeMinutes += 5;
+        statusNote = " (Delayed)";
+      }
+
+      if (timeMinutes < bestTimeMinutes) {
+        bestTimeMinutes = timeMinutes;
+      }
+    }
+
+    if (bestTimeMinutes == double.infinity) {
+      if (mounted) setState(() => _etaText = "No active collection");
+    } else {
+      final arrivalTime = DateTime.now().add(Duration(minutes: bestTimeMinutes.round()));
+      final timeStr = DateFormat('h:mm a').format(arrivalTime);
+      
+      if (mounted) {
+        setState(() {
+          if (bestTimeMinutes < 1) {
+            _etaText = "Arriving now";
+          } else {
+            _etaText = "$timeStr (${bestTimeMinutes.round()} mins)$statusNote";
+          }
+        });
+      }
+    }
+  }
+
+  String _getGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return "Good morning 👋";
+    if (hour < 17) return "Good afternoon 👋";
+    return "Good evening 👋";
   }
 
   @override
@@ -134,7 +407,7 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
           _buildHomeTab(),
           ResidentTrackTruckScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0)),
           ResidentComplaintsScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0)),
-          ResidentSettingsScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0)),
+          ResidentSettingsScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0), onProfileUpdate: _loadUser),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -142,195 +415,165 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
   }
 
   Widget _buildHomeTab() {
-    return SingleChildScrollView(
-      physics: const BouncingScrollPhysics(),
-      child: Column(
-        children: [
-          // 🏠 ORGANIZED HEADER
-          Container(
-            width: double.infinity,
-            height: 220,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFFE0F7FA),
-                  Color(0xFFB2DFDB),
-                  Color(0xFF80CBC4),
-                ],
-              ),
-              borderRadius: BorderRadius.vertical(bottom: Radius.circular(44)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black12,
-                  blurRadius: 20,
-                  offset: Offset(0, 5),
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 800),
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                height: 220,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF00796B), Color(0xFF009688), Color(0xFF4DB6AC)],
+                  ),
+                  borderRadius: BorderRadius.vertical(bottom: Radius.circular(44)),
+                  boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, 5))],
                 ),
-              ],
-            ),
-            padding: const EdgeInsets.fromLTRB(28, 64, 28, 28),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                padding: const EdgeInsets.fromLTRB(28, 64, 28, 28),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text("Good morning 👋", style: TextStyle(color: AppColors.textGray, fontSize: 14, fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 2),
-                        Text(
-                          _user?.name ?? "Jubennn",
-                          style: const TextStyle(color: AppColors.tealText, fontSize: 32, fontWeight: FontWeight.w900, letterSpacing: -0.8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(_getGreeting(), style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w600)),
+                              const SizedBox(height: 2),
+                              Text(
+                                _user?.name ?? "Resident",
+                                style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900, letterSpacing: -0.8),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  const Icon(Icons.location_on_rounded, color: Colors.white70, size: 14),
+                                  const SizedBox(width: 4),
+                                  Text(_user?.purok ?? "Area", style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
-                        const SizedBox(height: 4),
                         Row(
                           children: [
-                            const Icon(Icons.location_on_rounded, color: AppColors.tealText, size: 14),
-                            const SizedBox(width: 4),
-                            Text(_user?.purok ?? "Sentro", style: const TextStyle(color: AppColors.textGray, fontSize: 13, fontWeight: FontWeight.bold)),
+                            _buildHeaderIconButton(
+                              Icons.notifications_none_rounded,
+                              badgeCount: _unreadNotificationsCount > 0 ? _unreadNotificationsCount : null,
+                              onTap: () => _showNotificationsModal(context),
+                            ),
+                            const SizedBox(width: 12),
+                            _buildHeaderIconButton(Icons.power_settings_new_rounded, onTap: () => _showLogoutDialog(context)),
                           ],
                         ),
                       ],
                     ),
-                    Row(
-                      children: [
-                        _buildHeaderIconButton(
-                          Icons.notifications_none_rounded,
-                          badgeCount: _unreadNotificationsCount > 0 ? _unreadNotificationsCount : null,
-                          onTap: () => _showNotificationsModal(context),
-                        ),
-                        const SizedBox(width: 12),
-                        _buildHeaderIconButton(Icons.power_settings_new_rounded, onTap: () => _showLogoutDialog(context)),
-                      ],
-                    ),
                   ],
                 ),
-              ],
-            ),
-          ),
-
-          // 📊 UNIFORM STAT CARDS
-          Transform.translate(
-            offset: const Offset(0, -32),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                children: [
-                  Expanded(child: _buildStatCard("Active Trucks", "$_activeTrucks", Icons.local_shipping_outlined, const Color(0xFF00BFA5), const Color(0xFFE8F5E9), isLive: true)),
-                  const SizedBox(width: 12),
-                  Expanded(child: _buildStatCard("Arrival Status", "Nearby", Icons.access_time_rounded, const Color(0xFFFFA000), const Color(0xFFFFF8E1))),
-                ],
               ),
-            ),
-          ),
-
-          // 🗺️ CLEAN TRACKING CARD
-          _buildSectionTitle("Real-time Overview"),
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(32),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withAlpha(12),
-                  blurRadius: 20,
-                  offset: const Offset(0, 10)
-                )
-              ],
-              border: Border.all(color: const Color(0xFFF5F5F5)),
-            ),
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(20),
+              Transform.translate(
+                offset: const Offset(0, -32),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("Live Tracking", style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF1A1A1A), fontSize: 17)),
-                          Text("Direct fleet GPS updates", style: TextStyle(fontSize: 12, color: Color(0xFF757575))),
-                        ],
-                      ),
-                      TextButton(
-                        onPressed: () => setState(() => _selectedIndex = 1),
-                        child: const Text("View Full →", style: TextStyle(color: Color(0xFF00BFA5), fontWeight: FontWeight.w800, fontSize: 14)),
-                      ),
+                      Expanded(child: _buildStatCard("Active Trucks", "$_activeTrucks / $_totalTrucks", Icons.local_shipping_outlined, const Color(0xFF00BFA5), const Color(0xFFE8F5E9), isLive: true)),
+                      const SizedBox(width: 12),
+                      Expanded(child: _buildStatCard("Estimated Time", _etaText, Icons.access_time_rounded, const Color(0xFFFFA000), const Color(0xFFFFF8E1))),
                     ],
                   ),
                 ),
-                Container(
-                  height: 180,
-                  width: double.infinity,
-                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20), 
-                    color: const Color(0xFFF5F5F5),
-                    border: Border.all(color: Colors.grey.shade100),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: MapboxView(
-                      mode: 'dashboard',
-                      onTap: () => setState(() => _selectedIndex = 1),
-                    ),
-                  ),
+              ),
+              _buildSectionTitle("Real-time Overview"),
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(32),
+                  boxShadow: [BoxShadow(color: Colors.black.withAlpha(12), blurRadius: 20, offset: const Offset(0, 10))],
+                  border: Border.all(color: const Color(0xFFF5F5F5)),
                 ),
-              ],
-            ),
-          ),
-
-          // ⚡ ORGANIZED QUICK ACTIONS
-          _buildSectionTitle("Quick Actions"),
-          _buildActionCard("Track Trucks", "Check location on map", Icons.map_outlined, const Color(0xFF1E88E5), const Color(0xFFE3F2FD), () => setState(() => _selectedIndex = 1)),
-          _buildActionCard("Report Issue", "File a system complaint", Icons.error_outline_rounded, const Color(0xFFFF1744), const Color(0xFFFFF0F2), () => Navigator.pushNamed(context, '/file_complaint')),
-          
-          // Service Quality Rating - Only appears once
-          if (!_hasRated)
-            _buildActionCard("Service Quality", "Rate your experience", Icons.star_outline_rounded, const Color(0xFF9C27B0), const Color(0xFFF3E5F5), () => _showRateServiceModal(context)),
-
-          // 📅 SCHEDULE CARD
-          _buildSectionTitle("Regional Schedule"),
-          Container(
-            margin: const EdgeInsets.fromLTRB(20, 8, 20, 40),
-            padding: const EdgeInsets.all(28),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(32),
-              boxShadow: [BoxShadow(color: Colors.black.withAlpha(8), blurRadius: 20, offset: const Offset(0, 10))],
-            ),
-            child: Column(
-              children: [
-                Row(
+                child: Column(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: const Color(0xFFE8EAF6), borderRadius: BorderRadius.circular(16)),
-                      child: const Icon(Icons.calendar_today_rounded, color: Color(0xFF3F51B5), size: 22),
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("Live Tracking", style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF1A1A1A), fontSize: 17)),
+                              Text("Real-time truck locations", style: TextStyle(fontSize: 12, color: Color(0xFF757575))),
+                            ],
+                          ),
+                          TextButton(
+                            onPressed: () => setState(() => _selectedIndex = 1),
+                            child: const Text("Full Map", style: TextStyle(color: Color(0xFF00BFA5), fontWeight: FontWeight.w800, fontSize: 14)),
+                          ),
+                        ],
+                      ),
                     ),
-                    const SizedBox(width: 16),
-                    const Text("Collection Schedule", style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A), fontSize: 18)),
+                    Container(
+                      height: 200,
+                      width: double.infinity,
+                      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20), 
+                        color: const Color(0xFFF5F5F5),
+                        border: Border.all(color: Colors.grey.shade100),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: MapboxView(
+                          mode: 'dashboard',
+                          onTap: () => setState(() => _selectedIndex = 1),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 32),
-                _buildScheduleRow("Service Frequency", "Daily", isBadge: true),
-                const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
-                _buildScheduleRow("Active Window", "8:00 AM - 12:00 PM"),
-                const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
-                _buildScheduleRow("Designated Area", _user?.purok ?? "Sentro", isPurok: true),
-              ],
-            ),
+              ),
+              _buildSectionTitle("Quick Actions"),
+              _buildActionCard("Track Trucks", "Real-time GPS location", Icons.local_shipping_rounded, const Color(0xFF1E88E5), const Color(0xFFE3F2FD), () => setState(() => _selectedIndex = 1)),
+              _buildActionCard("File Complaint", "Report collection issues", Icons.feedback_outlined, const Color(0xFFFF1744), const Color(0xFFFFF0F2), () => Navigator.pushNamed(context, '/file_complaint')),
+              if (!_hasRated)
+                _buildActionCard("Service Quality", "Rate your experience", Icons.star_outline_rounded, const Color(0xFF9C27B0), const Color(0xFFF3E5F5), () => _showRateServiceModal(context)),
+              _buildSectionTitle("Collection Schedule"),
+              Container(
+                margin: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+                padding: const EdgeInsets.all(28),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(32),
+                  boxShadow: [BoxShadow(color: Colors.black.withAlpha(8), blurRadius: 20, offset: const Offset(0, 10))],
+                ),
+                child: Column(
+                  children: [
+                    _buildScheduleRow("Frequency", _scheduleFrequency, isBadge: true),
+                    const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
+                    _buildScheduleRow("Time Window", _actualStartTime == "Not started" || _actualStartTime == "Waiting for driver" 
+                    ? _actualStartTime 
+                    : (_predictedEndTime.isNotEmpty ? "$_actualStartTime – $_predictedEndTime" : _actualStartTime)),
+                    const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
+                    _buildScheduleRow("Your Area", _user?.purok ?? "Pending", isPurok: true),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
-
-  // --- REFINED UI COMPONENTS ---
 
   Widget _buildSectionTitle(String title) {
     return Padding(
@@ -351,17 +594,10 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
             width: 48,
             height: 48,
             decoration: BoxDecoration(
-              color: Colors.white.withAlpha(180),
+              color: Colors.white.withAlpha(40),
               borderRadius: BorderRadius.circular(14),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withAlpha(5),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
             ),
-            child: Icon(icon, color: AppColors.tealText, size: 24),
+            child: Icon(icon, color: Colors.white, size: 24),
           ),
           if (badgeCount != null)
             Positioned(
@@ -369,18 +605,8 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
               top: 6,
               child: Container(
                 padding: const EdgeInsets.all(4),
-                decoration: const BoxDecoration(
-                  color: Color(0xFFFF4081),
-                  shape: BoxShape.circle,
-                ),
-                child: Text(
-                  "$badgeCount",
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 8,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                decoration: const BoxDecoration(color: Color(0xFFFF4081), shape: BoxShape.circle),
+                child: Text("$badgeCount", style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
               ),
             ),
         ],
@@ -394,7 +620,7 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
       decoration: BoxDecoration(
         color: bgColor,
         borderRadius: BorderRadius.circular(28),
-        boxShadow: [BoxShadow(color: Colors.black.withAlpha(8), blurRadius: 12, offset: const Offset(0, 4))],
+        boxShadow: [BoxShadow(color: Colors.black.withAlpha(4), blurRadius: 12, offset: const Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -411,13 +637,13 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(color: const Color(0xFF00BFA5), borderRadius: BorderRadius.circular(12)),
-                  child: const Text("LIVE", style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900)),
+                  child: const Text("Live", style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900)),
                 ),
             ],
           ),
           const SizedBox(height: 24),
           Text(title, style: const TextStyle(fontSize: 12, color: Color(0xFF757575), fontWeight: FontWeight.w700)),
-          Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
+          Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
         ],
       ),
     );
@@ -471,15 +697,15 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
         if (isBadge)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            decoration: BoxDecoration(color: const Color(0xFFE8F5E9), borderRadius: BorderRadius.circular(20)),
-            child: Text(value, style: const TextStyle(color: Color(0xFF2E7D32), fontSize: 13, fontWeight: FontWeight.w900)),
+            decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(20)),
+            child: Text(value, style: const TextStyle(color: Color(0xFF00796B), fontSize: 13, fontWeight: FontWeight.w900)),
           )
         else if (isPurok)
           Row(
             children: [
-              const Icon(Icons.location_searching_rounded, color: Color(0xFF3F51B5), size: 16),
+              const Icon(Icons.explore_outlined, color: Color(0xFF00796B), size: 16),
               const SizedBox(width: 8),
-              Text(value, style: const TextStyle(color: Color(0xFF3F51B5), fontWeight: FontWeight.w900, fontSize: 14)),
+              Text(value, style: const TextStyle(color: Color(0xFF00796B), fontWeight: FontWeight.w900, fontSize: 14)),
             ],
           )
         else
@@ -503,32 +729,16 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
         selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
         unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 11),
         elevation: 0,
-        items: [
-          _buildNavItem(Icons.home_rounded, 'Home', 0),
-          _buildNavItem(Icons.location_on_rounded, 'Track', 1),
-          _buildNavItem(Icons.chat_bubble_rounded, 'Issues', 2),
-          _buildNavItem(Icons.settings_suggest_rounded, 'Config', 3),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.home_rounded), label: 'Home'),
+          BottomNavigationBarItem(icon: Icon(Icons.location_on_rounded), label: 'Track'),
+          BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_rounded), label: 'Complaints'),
+          BottomNavigationBarItem(icon: Icon(Icons.settings_suggest_rounded), label: 'Settings'),
         ],
         onTap: (index) => setState(() => _selectedIndex = index),
       ),
     );
   }
-
-  BottomNavigationBarItem _buildNavItem(IconData icon, String label, int index) {
-    bool isSelected = _selectedIndex == index;
-    return BottomNavigationBarItem(
-      icon: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        margin: const EdgeInsets.only(bottom: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-        decoration: isSelected ? BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(24)) : null,
-        child: Icon(icon, size: 24),
-      ),
-      label: label,
-    );
-  }
-
-  // --- REFINED MODALS ---
 
   void _showNotificationsModal(BuildContext context) {
     showDialog(
@@ -544,50 +754,9 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                 children: [
                   const Icon(Icons.notifications_active_outlined, color: Color(0xFF00BFA5), size: 28),
                   const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      "System Notifications",
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFF1A1A1A),
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () async {
-                      // Clear All: Mark as read for this user's purok
-                      final snapshot = await _database.ref('notifications').get();
-                      if (snapshot.exists) {
-                        final Map data = snapshot.value as Map;
-                        data.forEach((key, value) {
-                          final String targetPurok = (value['purok'] ?? '').toString();
-                          if (targetPurok == '' || targetPurok == _user?.purok) {
-                             _database.ref('notifications/$key').update({'isRead': true});
-                          }
-                        });
-                      }
-                    },
-                    style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(50, 30)),
-                    child: const Text(
-                      "Clear All",
-                      style: TextStyle(
-                        color: Color(0xFF00BFA5),
-                        fontWeight: FontWeight.w900,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
+                  const Expanded(child: Text("Notifications", style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
+                  TextButton(onPressed: () => _markAllAsRead(), child: const Text("Mark all as read")),
                 ],
-              ),
-              const SizedBox(height: 8),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  "Recently received system notifications",
-                  style: TextStyle(color: Color(0xFF757575), fontSize: 13),
-                ),
               ),
               const SizedBox(height: 24),
               Flexible(
@@ -596,63 +765,42 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                   builder: (context, snapshot) {
                     if (snapshot.hasData && snapshot.data!.snapshot.exists) {
                       final Map data = snapshot.data!.snapshot.value as Map;
-                      final List<Map<dynamic, dynamic>> list = [];
-                      data.forEach((key, value) {
-                        final String targetPurok = (value['purok'] ?? '').toString();
-                        if (targetPurok == '' || targetPurok == _user?.purok) {
-                           list.add({...Map<String, dynamic>.from(value as Map), 'id': key});
+                      final List list = [];
+                      data.forEach((k, v) {
+                        final val = v as Map;
+                        final String targetPurok = (val['purok'] ?? val['area'] ?? '').toString();
+                        final String? resId = val['residentId']?.toString();
+                        if (targetPurok == '' || targetPurok == _user?.purok || resId == _user?.userId) {
+                          list.add({...val, 'id': k});
                         }
                       });
                       
-                      if (list.isEmpty) {
-                         return _buildEmptyNotifications();
-                      }
-
-                      // Sort by timestamp descending
+                      if (list.isEmpty) return const Center(child: Padding(padding: EdgeInsets.all(40), child: Text("No notifications yet.")));
+                      
                       list.sort((a, b) => (b['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
-
+                      
                       return ListView.separated(
                         shrinkWrap: true,
                         itemCount: list.length,
-                        separatorBuilder: (context, index) => const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final item = list[index];
-                          return _buildNotificationItem(
-                            item['title'] ?? 'Alert',
-                            item['message'] ?? '',
-                            _formatTimestamp(item['timestamp']),
-                            item['type'] == 'COLLECTION_ALERT' ? Icons.local_shipping_rounded : Icons.notifications_none_rounded,
-                            item['type'] == 'COLLECTION_ALERT' ? const Color(0xFFE0F2F1) : const Color(0xFFF8F9FA),
-                            item['type'] == 'COLLECTION_ALERT' ? const Color(0xFF00897B) : const Color(0xFF9E9E9E),
-                            isRead: item['isRead'] ?? false,
-                            onTap: () {
-                              _database.ref('notifications/${item['id']}').update({'isRead': true});
-                            },
+                        separatorBuilder: (c, i) => const SizedBox(height: 12),
+                        itemBuilder: (c, i) {
+                          final item = list[i];
+                          return InkWell(
+                            onTap: () => _markAsRead(item['id']),
+                            borderRadius: BorderRadius.circular(16),
+                            child: _buildNotificationItem(item),
                           );
                         },
                       );
                     }
-                    return _buildEmptyNotifications();
+                    return const Center(child: Padding(padding: EdgeInsets.all(40), child: Text("No notifications yet.")));
                   },
                 ),
               ),
-              const SizedBox(height: 32),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: const Color(0xFF1A1A1A),
-                  minimumSize: const Size(double.infinity, 56),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    side: const BorderSide(color: Color(0xFFF5F5F5)),
-                  ),
-                  elevation: 0,
-                ),
-                child: const Text(
-                  "CLOSE",
-                  style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.2),
-                ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(onPressed: () => Navigator.pop(context), child: const Text("CLOSE", style: TextStyle(fontWeight: FontWeight.bold))),
               ),
             ],
           ),
@@ -661,108 +809,33 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
     );
   }
 
-  Widget _buildEmptyNotifications() {
-     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 20),
-          Container(
-            width: 80,
-            height: 80,
-            decoration: const BoxDecoration(color: Color(0xFFF8F9FA), shape: BoxShape.circle),
-            child: const Icon(Icons.done_all_rounded, size: 36, color: Color(0xFFD1D1D1)),
-          ),
-          const SizedBox(height: 16),
-          const Text("You're all caught up!", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF1A1A1A))),
-          const SizedBox(height: 4),
-          const Text("No new system alerts.", style: TextStyle(color: Color(0xFF757575), fontSize: 12)),
-          const SizedBox(height: 20),
-        ],
+  Widget _buildNotificationItem(Map item) {
+    final bool isRead = item['isRead'] == true;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isRead ? Colors.white : const Color(0xFFF0F9F8),
+        borderRadius: BorderRadius.circular(16), 
+        border: Border.all(color: isRead ? const Color(0xFFF5F5F5) : const Color(0xFF00BFA5).withOpacity(0.1))
       ),
-    );
-  }
-
-  String _formatTimestamp(dynamic timestamp) {
-    if (timestamp == null) return "Just now";
-    final int ms = (timestamp is int) ? timestamp : (int.tryParse(timestamp.toString()) ?? 0);
-    if (ms == 0) return "Just now";
-    
-    final DateTime dt = DateTime.fromMillisecondsSinceEpoch(ms);
-    final Duration diff = DateTime.now().difference(dt);
-    
-    if (diff.inMinutes < 1) return "Just now";
-    if (diff.inMinutes < 60) return "${diff.inMinutes}m ago";
-    if (diff.inHours < 24) return "${diff.inHours}h ago";
-    return "${diff.inDays}d ago";
-  }
-
-  Widget _buildNotificationItem(
-      String title,
-      String message,
-      String time,
-      IconData icon,
-      Color bgColor,
-      Color iconColor, {
-        bool isRead = false,
-        VoidCallback? onTap,
-      }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(24),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: const Color(0xFFF5F5F5)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: bgColor,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Icon(icon, color: iconColor, size: 24),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w900,
-                      fontSize: 14,
-                      color: Color(0xFF1A1A1A),
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    message,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF757575)),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    time,
-                    style: const TextStyle(fontSize: 11, color: Color(0xFFBDBDBD)),
-                  ),
-                ],
-              ),
-            ),
-            if (!isRead)
-              Container(
-                width: 8,
-                height: 8,
-                decoration: const BoxDecoration(color: Color(0xFFFF4081), shape: BoxShape.circle),
-              ),
-          ],
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: Text(item['title'] ?? 'Alert', style: TextStyle(fontWeight: FontWeight.w900, color: isRead ? Colors.black87 : const Color(0xFF00796B)))),
+              if (!isRead) Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF00BFA5), shape: BoxShape.circle)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(item['message'] ?? '', style: TextStyle(fontSize: 12, color: isRead ? const Color(0xFF757575) : Colors.black87)),
+          const SizedBox(height: 8),
+          Text(
+            item['timestamp'] != null ? DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(item['timestamp'])) : '',
+            style: const TextStyle(fontSize: 10, color: Colors.grey),
+          ),
+        ],
       ),
     );
   }
@@ -778,7 +851,6 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
               padding: const EdgeInsets.all(28),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text("Rate our Service", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
                   const SizedBox(height: 12),
@@ -824,8 +896,6 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please select a rating star")));
                               return;
                             }
-                            
-                            // Save to Firebase
                             await _database.ref('user_ratings/${_user!.userId}').set({
                               'rating': _userRating,
                               'comment': _ratingCommentController.text.trim(),
@@ -833,7 +903,6 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
                               'purok': _user!.purok,
                               'timestamp': ServerValue.timestamp,
                             });
-                            
                             if (mounted) {
                               setState(() => _hasRated = true);
                               Navigator.pop(context);
@@ -858,33 +927,19 @@ class _ResidentDashboardState extends State<ResidentDashboard> {
   void _showLogoutDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32)),
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFFFFF0F2), shape: BoxShape.circle), child: const Icon(Icons.logout_rounded, color: Color(0xFFFF1744), size: 32)),
-              const SizedBox(height: 24),
-              const Text("Secure Sign Out?", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
-              const SizedBox(height: 16),
-              const Text("Are you sure you want to end your current session? You'll need to re-authenticate to access your dashboard.", textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF757575), fontSize: 14, height: 1.5)),
-              const SizedBox(height: 32),
-              ElevatedButton(
-                onPressed: () async {
-                  await SessionManager.logout();
-                  if (!mounted) return;
-                  Navigator.pushReplacementNamed(context, '/');
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00BFA5), minimumSize: const Size(double.infinity, 56), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), elevation: 0),
-                child: const Text("Sign Out", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-              ),
-              const SizedBox(height: 12),
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel", style: TextStyle(color: Color(0xFF1A1A1A), fontWeight: FontWeight.w900))),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text("Sign Out?"),
+        content: const Text("Are you sure you want to end your current session?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          TextButton(
+            onPressed: () async {
+              await SessionManager.logout();
+              if (mounted) Navigator.pushReplacementNamed(context, '/');
+            },
+            child: const Text("Logout", style: TextStyle(color: Colors.red)),
           ),
-        ),
+        ],
       ),
     );
   }

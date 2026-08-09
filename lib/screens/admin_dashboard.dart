@@ -155,7 +155,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             final truckMap = Map<dynamic, dynamic>.from(value as Map);
             trucks.add(truckMap);
             
-            if (truckMap['status'] == 'active') {
+            if (truckMap['isOnline'] == true) {
               final speed = double.tryParse(truckMap['speed']?.toString() ?? '0') ?? 0.0;
               if (speed > 0) {
                 totalSpeed += speed;
@@ -167,7 +167,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
         if (mounted) {
           setState(() {
-            _activeTrucks = trucks.where((t) => t['status'] == 'active').length;
+            _activeTrucks = trucks.where((t) => t['isOnline'] == true).length;
             _fleetStatus = trucks;
             _averageSpeed = activeWithSpeed > 0 ? totalSpeed / activeWithSpeed : 0.0;
           });
@@ -982,7 +982,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           if (_fleetStatus.isEmpty)
             const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Center(child: Text("No active fleet data", style: TextStyle(color: Colors.grey))))
           else
-            Column(children: _fleetStatus.take(3).map((truck) => _buildModernFleetItem(truck)).toList()),
+            Column(children: _fleetStatus.where((t) => t['isOnline'] == true).take(3).map((truck) => _buildModernFleetItem(truck)).toList()),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,

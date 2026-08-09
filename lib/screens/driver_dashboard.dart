@@ -140,12 +140,15 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     try {
       Position startPos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      debugPrint("[DRIVER GPS] latitude = ${startPos.latitude}, longitude = ${startPos.longitude}, accuracy = ${startPos.accuracy}");
+
       _sessionId = _database.ref('driver_routes').push().key;
       _startDateTime = DateTime.now();
       String timeStr = DateFormat('h:mm a').format(_startDateTime!);
 
       await _database.ref('truck_locations').child(truckId).update({
-        'status': 'active',
+        'status': 'ACTIVE',
+        'isOnline': true,
         'driver_id': driverId,
         'driver_name': _user?.name ?? 'Driver',
         'start_time': timeStr,
@@ -157,8 +160,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
         'avg_speed': 0.0,
         'efficiency': 0.0,
         'accuracy': startPos.accuracy,
+        'lastSeen': ServerValue.timestamp,
         'updatedAt': DateTime.now().toIso8601String(),
         'current_session': _sessionId,
+      });
+
+      // Handle disconnect - automatically set to OFFLINE if driver app closes/crashes
+      _database.ref('truck_locations').child(truckId).onDisconnect().update({
+        'status': 'OFFLINE',
+        'isOnline': false,
+        'lastSeen': ServerValue.timestamp,
       });
 
       await _database.ref('driver_routes').child(_sessionId!).set({
@@ -167,9 +178,10 @@ class _DriverDashboardState extends State<DriverDashboard> {
         'driver_name': _user?.name ?? 'Driver',
         'start_time': timeStr,
         'route_status': 'ACTIVE',
+        'isOnline': true,
         'timestamp': ServerValue.timestamp,
         'date': DateFormat('yyyy-MM-dd').format(DateTime.now()),
-        'maintenanceProcessed': false, // Duplicate prevention flag
+        'maintenanceProcessed': false,
       });
 
       // Initialize Progress in Firebase
@@ -261,8 +273,12 @@ class _DriverDashboardState extends State<DriverDashboard> {
       'avg_speed': avgSpeed,
       'heading': pos.heading,
       'accuracy': pos.accuracy,
+      'isOnline': true,
+      'lastSeen': ServerValue.timestamp,
       'updatedAt': DateTime.now().toIso8601String(),
     });
+
+    debugPrint("[DRIVER LIVE SHARE] truckId = $truckId, lat = ${pos.latitude}, lng = ${pos.longitude}, status = $_status");
 
     String trailColor = "BLUE";
     if (_status == "IDLE") trailColor = "YELLOW";
@@ -286,6 +302,13 @@ class _DriverDashboardState extends State<DriverDashboard> {
           'completedAt': DateFormat('h:mm a').format(DateTime.now()),
           'timestamp': ServerValue.timestamp,
         });
+        
+        // Update current purok in truck_locations
+        final truckId = _user?.preferredTruck ?? "GT-001";
+        _database.ref('truck_locations').child(truckId).update({
+          'current_purok': p['name'],
+        });
+
         SystemLogger.logEvent("ROUTE_COMPLETED", "Entered ${p['name']}");
       }
     }
@@ -335,7 +358,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   Future<void> _updateTripStatus(String newStatus) async {
     final truckId = _user?.preferredTruck ?? "GT-001";
     await _database.ref('truck_locations').child(truckId).update({
-      'status': newStatus.toLowerCase(),
+      'status': newStatus.toUpperCase(),
       'updatedAt': DateTime.now().toIso8601String(),
     });
 
@@ -669,6 +692,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(28),
               child: DriverTrackTruckScreen(
+                key: const ValueKey("driver_map_tracking"), // Stabilize the map widget
                 isEmbedded: true, 
                 currentSessionId: _sessionId,
                 focusTruckId: _user?.preferredTruck ?? "GT-001",
@@ -764,8 +788,63 @@ class _DriverDashboardState extends State<DriverDashboard> {
     showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Finish Trip?"), content: const Text("This will complete the current session."), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")), TextButton(onPressed: () { Navigator.pop(context); _finishTrip(); }, child: const Text("DONE"))]));
   }
 
+  Future<void> _handleLogout() async {
+    // 1. Stop all tracking immediately
+    _positionSubscription?.cancel();
+    _idleDetectionTimer?.cancel();
+    _statusSubscription?.cancel();
+    _purokStatusSubscription?.cancel();
+
+    final truckId = _user?.preferredTruck ?? "GT-001";
+    final driverId = _user?.userId ?? "Unknown";
+
+    try {
+      // 2. Update Firebase status to OFFLINE before signing out
+      await _database.ref('truck_locations').child(truckId).update({
+        'status': 'OFFLINE',
+        'isOnline': false,
+        'lastSeen': ServerValue.timestamp,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+
+      // 3. Optional: End the session if it exists
+      if (_sessionId != null) {
+        await _database.ref('driver_routes').child(_sessionId!).update({
+          'isOnline': false,
+          'lastSeen': ServerValue.timestamp,
+        });
+      }
+
+      await SystemLogger.logEvent("LOGOUT", "Driver $driverId logged out. Truck $truckId set to OFFLINE.");
+    } catch (e) {
+      debugPrint("Error during status update on logout: $e");
+    }
+
+    // 4. Clear session and navigate
+    await SessionManager.logout();
+    if (mounted) {
+      Navigator.pushReplacementNamed(context, '/');
+    }
+  }
+
   void _showLogoutDialog(BuildContext context) {
-    showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Sign Out?"), content: const Text("End duty and log out?"), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")), TextButton(onPressed: () async { await SystemLogger.logEvent("LOGOUT", "Admin session ended"); await SessionManager.logout(); if (mounted) Navigator.pushReplacementNamed(context, '/'); }, child: const Text("Sign Out", style: TextStyle(fontWeight: FontWeight.w900)))]));
+    showDialog(
+      context: context, 
+      builder: (context) => AlertDialog(
+        title: const Text("Sign Out?"), 
+        content: const Text("End duty and log out? This will set your status to OFFLINE."), 
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")), 
+          TextButton(
+            onPressed: () { 
+              Navigator.pop(context); 
+              _handleLogout(); 
+            }, 
+            child: const Text("Sign Out", style: TextStyle(fontWeight: FontWeight.w900, color: Colors.red))
+          )
+        ]
+      )
+    );
   }
 
   Widget _buildBottomNav() {

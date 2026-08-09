@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_database/firebase_database.dart';
 import '../utils/app_theme.dart';
 import '../utils/session_manager.dart';
 import '../models/user.dart';
@@ -8,7 +10,8 @@ import '../utils/custom_notification.dart';
 class ResidentSettingsScreen extends StatefulWidget {
   final bool isEmbedded;
   final VoidCallback? onBack;
-  const ResidentSettingsScreen({super.key, this.isEmbedded = false, this.onBack});
+  final VoidCallback? onProfileUpdate;
+  const ResidentSettingsScreen({super.key, this.isEmbedded = false, this.onBack, this.onProfileUpdate});
 
   @override
   State<ResidentSettingsScreen> createState() => _ResidentSettingsScreenState();
@@ -16,28 +19,21 @@ class ResidentSettingsScreen extends StatefulWidget {
 
 class _ResidentSettingsScreenState extends State<ResidentSettingsScreen> {
   final ApiService _apiService = ApiService();
+  final FirebaseDatabase _database = FirebaseDatabase.instance;
   UserData? _user;
-  bool _emailNotifications = true;
-  bool _appNotifications = true;
+  bool _pushNotifications = true;
+  bool _isLoading = false;
 
-  // Controllers for password change
-  final _oldPasswordController = TextEditingController();
-  final _newPasswordController = TextEditingController();
-  final _confirmPasswordController = TextEditingController();
-  bool _isPasswordLoading = false;
+  final List<String> _puroks = [
+    "Purok 1", "Purok 2", "Purok 3", "Purok 4", "Dos Riles", "Sentro",
+    "San Isidro", "Paraiso", "Riverside", "Kalaw Street",
+    "Home Subdivision", "Tanco Road / Ayala Highway", "Brixton Area"
+  ];
 
   @override
   void initState() {
     super.initState();
     _loadUser();
-  }
-
-  @override
-  void dispose() {
-    _oldPasswordController.dispose();
-    _newPasswordController.dispose();
-    _confirmPasswordController.dispose();
-    super.dispose();
   }
 
   void _loadUser() async {
@@ -56,10 +52,8 @@ class _ResidentSettingsScreenState extends State<ResidentSettingsScreen> {
           final data = response.data['data'];
           if (mounted) {
             setState(() {
-              _emailNotifications = data['email_notifications'] ?? true;
-              _appNotifications = data['app_notifications'] ?? true;
+              _pushNotifications = data['app_notifications'] ?? true;
             });
-            SessionManager.setAppNotificationsEnabled(_appNotifications);
           }
         }
       }
@@ -68,47 +62,35 @@ class _ResidentSettingsScreenState extends State<ResidentSettingsScreen> {
     }
   }
 
-  Future<void> _toggleSetting(String key, bool value) async {
-    setState(() {
-      if (key == 'email') _emailNotifications = value;
-      if (key == 'app') {
-        _appNotifications = value;
-        SessionManager.setAppNotificationsEnabled(value);
-      }
-    });
-
+  Future<void> _updatePushNotification(bool value) async {
+    setState(() => _pushNotifications = value);
     try {
       if (_user != null) {
         final response = await _apiService.updateUserSettings(
           userId: _user!.userId,
           role: _user!.role,
-          emailNotifications: key == 'email' ? value : null,
-          appNotifications: key == 'app' ? value : null,
+          appNotifications: value,
         );
 
         if (response.data['success'] == true) {
           if (mounted) {
-            final String status = value ? "Enabled" : "Disabled";
-            final String settingName = key == 'email' ? "Email Notifications" : "Push Alerts";
-            CustomNotification.showTopNotification(context, "$settingName $status", false);
+            CustomNotification.showTopNotification(
+              context, 
+              value ? "Push notifications enabled successfully." : "Push notifications disabled successfully.", 
+              false
+            );
           }
         } else {
           if (mounted) {
-            setState(() {
-              if (key == 'email') _emailNotifications = !value;
-              if (key == 'app') _appNotifications = !value;
-            });
-            CustomNotification.showTopNotification(context, response.data['message'] ?? "Failed to update setting");
+            setState(() => _pushNotifications = !value);
+            CustomNotification.showTopNotification(context, response.data['message'] ?? "Failed to update notification settings");
           }
         }
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          if (key == 'email') _emailNotifications = !value;
-          if (key == 'app') _appNotifications = !value;
-        });
-        CustomNotification.showTopNotification(context, "Error updating setting: $e");
+        setState(() => _pushNotifications = !value);
+        CustomNotification.showTopNotification(context, "Connection Error: Unable to sync settings.");
       }
     }
   }
@@ -116,264 +98,46 @@ class _ResidentSettingsScreenState extends State<ResidentSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
+      backgroundColor: const Color(0xFFF3F5F7),
       body: SafeArea(
-        child: Column(
-          children: [
-            // 🏛️ ORGANIZED HEADER
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))]),
-              child: Row(
-                children: [
-                  if (!widget.isEmbedded || widget.onBack != null)
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF1A1A1A), size: 20),
-                      onPressed: () {
-                        if (widget.onBack != null) {
-                          widget.onBack!();
-                        } else {
-                          Navigator.pop(context);
-                        }
-                      },
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 800),
+            child: Column(
+              children: [
+                _buildHeader(),
+                Expanded(
+                  child: SingleChildScrollView(
+                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    child: Column(
+                      children: [
+                        _buildSectionHeader("Profile Information"),
+                        _buildProfileCard(),
+                        
+                        const SizedBox(height: 24),
+                        _buildSectionHeader("Notifications"),
+                        _buildNotificationCard(),
+                        
+                        const SizedBox(height: 24),
+                        _buildSectionHeader("Account & Privacy"),
+                        _buildAccountCard(),
+                        
+                        const SizedBox(height: 24),
+                        _buildSectionHeader("Help & Support"),
+                        _buildHelpCard(),
+                        
+                        const SizedBox(height: 24),
+                        _buildAppInfoCard(),
+                        
+                        const SizedBox(height: 32),
+                        _buildLogoutButton(),
+                        const SizedBox(height: 40),
+                      ],
                     ),
-                  const SizedBox(width: 12),
-                  const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text("Configuration", style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
-                    Text("Manage profile and preferences", style: TextStyle(fontSize: 11, color: Color(0xFF757575), fontWeight: FontWeight.w600)),
-                  ]),
-                ],
-              ),
-            ),
-
-            Expanded(
-              child: SingleChildScrollView(
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.only(bottom: 32),
-                child: Column(
-                  children: [
-                    _buildSectionHeader("Identity"),
-                    _buildProfileCard(),
-
-                    _buildSectionHeader("Notifications"),
-                    _buildNotificationCard(),
-
-                    _buildSectionHeader("Security & Data"),
-                    _buildActionList([
-                      _MenuOption("Change Account Password", Icons.lock_outline_rounded, () => _showChangePasswordModal(context)),
-                      _MenuOption("Update Profile Details", Icons.badge_outlined, () => _showEditProfileModal(context)),
-                    ]),
-
-                    _buildSectionHeader("Support Hub"),
-                    _buildActionList([
-                      _MenuOption("General FAQs", Icons.help_outline_rounded, () => _showFAQsModal(context)),
-                      _MenuOption("Direct Support Line", Icons.support_agent_rounded, () => _showContactSupportModal(context)),
-                      _MenuOption("Legal & About", Icons.info_outline_rounded, () => _showAboutModal(context)),
-                    ]),
-
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 40, 20, 16),
-                      child: ElevatedButton.icon(
-                        onPressed: () => _showLogoutDialog(context),
-                        icon: const Icon(Icons.logout_rounded, color: Colors.white),
-                        label: const Text("Sign Out Safely", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00897B), minimumSize: const Size(double.infinity, 64), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), elevation: 8, shadowColor: const Color(0xFF00897B).withAlpha(100)),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _handleUpdatePassword() async {
-    final oldPass = _oldPasswordController.text.trim();
-    final newPass = _newPasswordController.text.trim();
-    final confirmPass = _confirmPasswordController.text.trim();
-
-    if (oldPass.isEmpty || newPass.isEmpty || confirmPass.isEmpty) {
-      CustomNotification.showTopNotification(context, "Please fill all password fields");
-      return;
-    }
-
-    if (newPass != confirmPass) {
-      CustomNotification.showTopNotification(context, "New passwords do not match");
-      return;
-    }
-
-    setState(() => _isPasswordLoading = true);
-
-    try {
-      if (_user == null) return;
-
-      final response = await _apiService.changePassword(
-        _user!.userId,
-        _user!.role,
-        oldPass,
-        newPass,
-      );
-
-      if (response.data['success'] == true) {
-        if (mounted) {
-          Navigator.pop(context);
-          CustomNotification.showTopNotification(context, "Password updated successfully", false);
-          _oldPasswordController.clear();
-          _newPasswordController.clear();
-          _confirmPasswordController.clear();
-        }
-      } else {
-        if (mounted) {
-          CustomNotification.showTopNotification(context, response.data['message'] ?? "Failed to update password");
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        CustomNotification.showTopNotification(context, "An error occurred: $e");
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isPasswordLoading = false);
-      }
-    }
-  }
-
-  // --- REFINED COMPONENTS ---
-
-  Widget _buildSectionHeader(String title) {
-    return Padding(padding: const EdgeInsets.fromLTRB(28, 28, 24, 12), child: Align(alignment: Alignment.centerLeft, child: Text(title.toUpperCase(), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: Color(0xFF9E9E9E), letterSpacing: 1.5))));
-  }
-
-  Widget _buildProfileCard() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      padding: const EdgeInsets.all(28),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 15, offset: const Offset(0, 8))]),
-      child: Column(
-        children: [
-          _buildInfoRow("Full Name", _user?.name ?? "Jubennn", Icons.person_outline_rounded),
-          const Padding(padding: EdgeInsets.symmetric(vertical: 16), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
-          _buildInfoRow("Account Email", _user?.email ?? "jubennn23@gmail.com", Icons.alternate_email_rounded),
-          const Padding(padding: EdgeInsets.symmetric(vertical: 16), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
-          _buildInfoRow("Contact No.", _user?.phone ?? "09057277096", Icons.phone_android_rounded),
-          const Padding(padding: EdgeInsets.symmetric(vertical: 16), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
-          _buildInfoRow("Assigned Purok", _user?.purok ?? "Sentro", Icons.map_outlined),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow(String label, String val, IconData icon) {
-    return Row(children: [
-      Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(12)), child: Icon(icon, size: 18, color: const Color(0xFF00897B))),
-      const SizedBox(width: 16),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(fontSize: 10, color: Color(0xFF9E9E9E), fontWeight: FontWeight.w800)),
-        const SizedBox(height: 2),
-        Text(val, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: Color(0xFF1A1A1A))),
-      ])),
-    ]);
-  }
-
-  Widget _buildNotificationCard() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 15, offset: const Offset(0, 8))]),
-      child: Column(
-        children: [
-          _buildNotificationRow("Email Notifications", "Receive updates via email", _emailNotifications, (v) => _toggleSetting('email', v), Icons.email_outlined),
-          const Padding(padding: EdgeInsets.symmetric(vertical: 16), child: Divider(height: 1, color: Color(0xFFF5F5F5))),
-          _buildNotificationRow("Push Alerts", "Receive live app updates", _appNotifications, (v) => _toggleSetting('app', v), Icons.notifications_active_outlined),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNotificationRow(String title, String sub, bool val, Function(bool) onChanged, IconData icon) {
-    return Row(children: [
-      Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(16)), child: Icon(icon, color: const Color(0xFF00897B), size: 24)),
-      const SizedBox(width: 20),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Color(0xFF1A1A1A))),
-        Text(sub, style: const TextStyle(fontSize: 12, color: Color(0xFF757575), fontWeight: FontWeight.w500)),
-      ])),
-      Switch(value: val, onChanged: onChanged, activeColor: const Color(0xFF00BFA5)),
-    ]);
-  }
-
-  Widget _buildActionList(List<_MenuOption> options) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 15, offset: const Offset(0, 8))]),
-      child: Column(children: options.map((opt) => Column(children: [
-        InkWell(onTap: opt.onTap, borderRadius: BorderRadius.circular(24), child: Padding(padding: const EdgeInsets.all(24), child: Row(children: [
-          Icon(opt.icon, size: 22, color: const Color(0xFF424242)),
-          const SizedBox(width: 16),
-          Expanded(child: Text(opt.title, style: const TextStyle(fontSize: 15, color: Color(0xFF424242), fontWeight: FontWeight.w700))),
-          const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFFD1D1D1)),
-        ]))),
-        if (options.indexOf(opt) != options.length - 1) const Divider(height: 1, color: Color(0xFFF5F5F5), indent: 64, endIndent: 24),
-      ])).toList()),
-    );
-  }
-
-  // --- MODALS ---
-
-  void _showChangePasswordModal(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)),
-          insetPadding: const EdgeInsets.all(24),
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.lock_reset_rounded, color: Color(0xFF00897B), size: 28),
-                      const SizedBox(width: 16),
-                      const Text("Security Update", style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  const Text("Update your account password to ensure maximum security.", style: TextStyle(color: Color(0xFF757575), fontSize: 13, height: 1.4, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 32),
-                  _buildDialogInput("Current Password", true, controller: _oldPasswordController),
-                  const SizedBox(height: 16),
-                  _buildDialogInput("New Secure Password", true, controller: _newPasswordController),
-                  const SizedBox(height: 16),
-                  _buildDialogInput("Confirm New Password", true, controller: _confirmPasswordController),
-                  const SizedBox(height: 32),
-                  ElevatedButton(
-                    onPressed: _isPasswordLoading ? null : _handleUpdatePassword,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2E7D32),
-                      minimumSize: const Size(double.infinity, 64),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      elevation: 0,
-                    ),
-                    child: _isPasswordLoading
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                        : const Text("UPDATE PASSWORD", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 15)),
-                  ),
-                  const SizedBox(height: 12),
-                  Center(
-                    child: TextButton(
-                      onPressed: _isPasswordLoading ? null : () => Navigator.pop(context),
-                      child: const Text("CLOSE", style: TextStyle(color: Color(0xFFBDBDBD), fontWeight: FontWeight.w900, letterSpacing: 1.2)),
-                    ),
-                  ),
-                ],
-              ),
+              ],
             ),
           ),
         ),
@@ -381,109 +145,686 @@ class _ResidentSettingsScreenState extends State<ResidentSettingsScreen> {
     );
   }
 
-  void _showEditProfileModal(BuildContext context) {
-    _showCustomDialog(context, Icons.manage_accounts_rounded, "Profile Sync", "Update your regional information and contact details.", [
-      _buildDialogInput("Legal Full Name", false, val: _user?.name ?? "Jubennn"),
-      const SizedBox(height: 16),
-      _buildDialogInput("Electronic Mail", false, val: _user?.email ?? "jubennn23@gmail.com"),
-      const SizedBox(height: 16),
-      _buildDialogInput("Mobile Connection", false, val: _user?.phone ?? "09057277096"),
-      const SizedBox(height: 16),
-      _buildDialogInput("Primary Purok", false, val: _user?.purok ?? "Sentro", isDropdown: true),
-    ], "SAVE CHANGES", const Color(0xFF00796B));
-  }
-
-  void _showFAQsModal(BuildContext context) {
-    _showCustomDialog(context, Icons.quiz_rounded, "Support Center", "Common questions regarding fleet tracking and issue reporting.", [
-      _buildFAQ("How to track fleet?", "Navigate to the Track tab to see real-time GPS locations and ETAs of trucks in your area."),
-      _buildFAQ("Reporting process?", "Use the Issues tab to file a report. Our admins typically respond within 24 hours."),
-      _buildFAQ("Data privacy?", "All user information is encrypted and only accessible by authorized local personnel."),
-    ], null, null);
-  }
-
-  void _showContactSupportModal(BuildContext context) {
-    _showCustomDialog(context, Icons.support_agent_rounded, "Contact Support", "Our team is available for direct inquiries and urgent assistance.", [
-      _buildContactItem(Icons.phone_rounded, "+63 912 345 6789"),
-      _buildContactItem(Icons.email_rounded, "support@garbagetracker.com"),
-      _buildContactItem(Icons.pin_drop_rounded, "Barangay Hall, Purok 2, City Center"),
-    ], null, null);
-  }
-
-  void _showAboutModal(BuildContext context) {
-    _showCustomDialog(context, Icons.info_outline_rounded, "About System", "Garbage Tracker 1.0", [
-      const Text("A high-efficiency logistics solution designed for community waste management. Focused on transparency and regional cleanliness.", style: TextStyle(color: Color(0xFF616161), fontSize: 14, height: 1.6, fontWeight: FontWeight.w500)),
-      const SizedBox(height: 24),
-      const Center(child: Text("Version 1.0.4 Premium\n© 2026 Logistics Team", textAlign: TextAlign.center, style: TextStyle(color: Color(0xFFBDBDBD), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1))),
-    ], null, null);
-  }
-
-  // --- MODAL UTILS ---
-
-  void _showCustomDialog(BuildContext context, IconData icon, String title, String sub, List<Widget> body, String? btnText, Color? btnColor) {
-    showDialog(context: context, builder: (context) => Dialog(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)), insetPadding: const EdgeInsets.all(24), child: Padding(padding: const EdgeInsets.all(32), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [Icon(icon, color: const Color(0xFF00897B), size: 28), const SizedBox(width: 16), Text(title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A)))]),
-      const SizedBox(height: 12),
-      Text(sub, style: const TextStyle(color: Color(0xFF757575), fontSize: 13, height: 1.4, fontWeight: FontWeight.w500)),
-      const SizedBox(height: 32),
-      ...body,
-      if (btnText != null) ...[
-        const SizedBox(height: 32),
-        ElevatedButton(onPressed: () => Navigator.pop(context), style: ElevatedButton.styleFrom(backgroundColor: btnColor, minimumSize: const Size(double.infinity, 64), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), elevation: 0), child: Text(btnText, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 15))),
-      ],
-      const SizedBox(height: 12),
-      Center(child: TextButton(onPressed: () => Navigator.pop(context), child: const Text("CLOSE", style: TextStyle(color: Color(0xFFBDBDBD), fontWeight: FontWeight.w900, letterSpacing: 1.2)))),
-    ]))));
-  }
-
-  Widget _buildDialogInput(String label, bool isPass, {String? val, bool isDropdown = false, TextEditingController? controller}) {
+  Widget _buildHeader() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(18), border: Border.all(color: const Color(0xFFF0F0F0))),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Row(
         children: [
-          Text(label.toUpperCase(), style: const TextStyle(fontSize: 9, color: Color(0xFF9E9E9E), fontWeight: FontWeight.w900, letterSpacing: 0.5)),
-          const SizedBox(height: 4),
-          if (controller != null)
-            TextField(
-              controller: controller,
-              obscureText: isPass,
-              style: const TextStyle(fontSize: 15, color: Color(0xFF424242), fontWeight: FontWeight.w700),
-              decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero),
-            )
-          else
-            Row(
-              children: [
-                Expanded(child: Text(val ?? (isPass ? "••••••••" : ""), style: const TextStyle(fontSize: 15, color: Color(0xFF424242), fontWeight: FontWeight.w700))),
-                if (isPass) const Icon(Icons.visibility_off_rounded, size: 18, color: Colors.black12),
-                if (isDropdown) const Icon(Icons.keyboard_arrow_down_rounded, size: 22, color: Color(0xFF00897B))
-              ],
-            )
+          IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+            onPressed: widget.onBack ?? () => Navigator.pop(context),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Settings", style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
+              Text("Manage your preferences", style: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
+            ],
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildFAQ(String q, String a) {
-    return Padding(padding: const EdgeInsets.only(bottom: 24), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(q, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: Color(0xFF1A1A1A))), const SizedBox(height: 8), Text(a, style: const TextStyle(fontSize: 13, color: Color(0xFF757575), height: 1.5))]));
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 12),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Row(
+          children: [
+            Icon(_getSectionIcon(title), size: 18, color: AppColors.tealText),
+            const SizedBox(width: 10),
+            Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF1A1A1A))),
+          ],
+        ),
+      ),
+    );
   }
 
-  Widget _buildContactItem(IconData icon, String val) {
-    return Padding(padding: const EdgeInsets.only(bottom: 20), child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: const Color(0xFFF0F2F1), borderRadius: BorderRadius.circular(12)), child: Icon(icon, size: 18, color: const Color(0xFF00897B))), const SizedBox(width: 20), Text(val, style: const TextStyle(fontSize: 15, color: Color(0xFF424242), fontWeight: FontWeight.w700))]));
+  IconData _getSectionIcon(String title) {
+    switch (title) {
+      case "Profile Information": return Icons.person_rounded;
+      case "Notifications": return Icons.notifications_rounded;
+      case "Account & Privacy": return Icons.lock_rounded;
+      case "Help & Support": return Icons.help_rounded;
+      default: return Icons.settings;
+    }
+  }
+
+  Widget _buildProfileCard() {
+    return InkWell(
+      onTap: _showEditProfileModal,
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: AppDecorations.cardDecoration(),
+        child: Column(
+          children: [
+            _buildProfileRow("Full Name", _user?.name ?? "Steve Espaldon"),
+            const Divider(height: 32, thickness: 0.5),
+            _buildProfileRow("Email", _user?.email ?? "steve@gmail.com"),
+            const Divider(height: 32, thickness: 0.5),
+            _buildProfileRow("Contact Number", _user?.phone ?? "09676838820"),
+            const Divider(height: 32, thickness: 0.5),
+            _buildProfileRow("Purok", _user?.purok ?? "Purok 3"),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProfileRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF2C3E50))),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNotificationCard() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      decoration: AppDecorations.cardDecoration(),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Push Notifications", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF2C3E50))),
+                Text("Receive app notifications", style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
+              ],
+            ),
+          ),
+          Switch(
+            value: _pushNotifications,
+            onChanged: _updatePushNotification,
+            activeColor: AppColors.tealText,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAccountCard() {
+    return Container(
+      decoration: AppDecorations.cardDecoration(),
+      child: Column(
+        children: [
+          _buildActionRow(Icons.password_rounded, "Change Password", _showChangePasswordModal),
+          const Divider(height: 1, indent: 64),
+          _buildActionRow(Icons.storage_rounded, "Data Management", _showDataManagementModal),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHelpCard() {
+    return Container(
+      decoration: AppDecorations.cardDecoration(),
+      child: Column(
+        children: [
+          _buildActionRow(Icons.quiz_rounded, "FAQs", _showFAQsModal),
+          const Divider(height: 1, indent: 64),
+          _buildActionRow(Icons.support_agent_rounded, "Contact Support", _showContactSupportModal),
+          const Divider(height: 1, indent: 64),
+          _buildActionRow(Icons.info_outline_rounded, "About", _showAboutModal),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAppInfoCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: AppDecorations.cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("App Information", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF2C3E50))),
+          const SizedBox(height: 16),
+          _buildInfoRow("Version", "1.0.0"),
+          const SizedBox(height: 12),
+          _buildInfoRow("Last Updated", "April 2026"),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: TextStyle(fontSize: 14, color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
+        Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF2C3E50))),
+      ],
+    );
+  }
+
+  Widget _buildActionRow(IconData icon, String title, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: const Color(0xFFF3F5F7), borderRadius: BorderRadius.circular(12)),
+              child: Icon(icon, size: 20, color: AppColors.tealText),
+            ),
+            const SizedBox(width: 16),
+            Expanded(child: Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFF2C3E50)))),
+            Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey.shade400),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLogoutButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 60,
+      child: ElevatedButton(
+        onPressed: () => _showLogoutDialog(context),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.tealText,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 0,
+        ),
+        child: const Text("Logout", style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 0.5)),
+      ),
+    );
+  }
+
+  // --- LOGIC & MODALS ---
+
+  void _showEditProfileModal() {
+    final nameController = TextEditingController(text: _user?.name);
+    final emailController = TextEditingController(text: _user?.email);
+    final phoneController = TextEditingController(text: _user?.phone);
+    final addressController = TextEditingController(text: _user?.completeAddress);
+    String selectedPurok = _user?.purok ?? "Sentro";
+
+    _showStyledBottomSheet(
+      title: "Edit Profile",
+      children: [
+        _buildTextField("Full Name", nameController),
+        const SizedBox(height: 16),
+        _buildTextField("Email Address", emailController, keyboardType: TextInputType.emailAddress),
+        const SizedBox(height: 16),
+        _buildTextField("Contact Number", phoneController, keyboardType: TextInputType.phone),
+        const SizedBox(height: 16),
+        _buildPurokDropdown(selectedPurok, (val) => selectedPurok = val!),
+        const SizedBox(height: 16),
+        _buildTextField("Complete Address", addressController, maxLines: 2),
+        const SizedBox(height: 24),
+        _buildSaveButton(() async {
+          if (nameController.text.isEmpty || phoneController.text.isEmpty || emailController.text.isEmpty) {
+             CustomNotification.showTopNotification(context, "Please fill required fields");
+             return;
+          }
+          setState(() => _isLoading = true);
+          try {
+            final response = await _apiService.updateProfile(
+              userId: _user!.userId,
+              role: _user!.role,
+              name: nameController.text.trim(),
+              email: emailController.text.trim(),
+              phone: phoneController.text.trim(),
+              address: addressController.text.trim(),
+            );
+            
+            await _database.ref('residents/${_user!.userId}').update({
+              'name': nameController.text.trim(),
+              'email': emailController.text.trim(),
+              'phone': phoneController.text.trim(),
+              'purok': selectedPurok,
+              'complete_address': addressController.text.trim(),
+            });
+
+            if (response.data['success'] == true) {
+               final updatedUser = {..._user!.toJson(), 
+                'name': nameController.text.trim(),
+                'email': emailController.text.trim(),
+                'phone': phoneController.text.trim(),
+                'purok': selectedPurok,
+                'complete_address': addressController.text.trim(),
+               };
+               await SessionManager.saveUser(updatedUser);
+               _loadUser();
+               if (widget.onProfileUpdate != null) widget.onProfileUpdate!();
+               if (mounted) {
+                 Navigator.pop(context);
+                 CustomNotification.showTopNotification(context, "Profile updated successfully.", false);
+               }
+            }
+          } catch (e) {
+             CustomNotification.showTopNotification(context, "Error updating profile: $e");
+          } finally {
+             if (mounted) setState(() => _isLoading = false);
+          }
+        }),
+      ],
+    );
+  }
+
+  void _showChangePasswordModal() {
+    final oldPass = TextEditingController();
+    final newPass = TextEditingController();
+    final confirmPass = TextEditingController();
+    bool obscureOld = true;
+    bool obscureNew = true;
+    bool obscureConfirm = true;
+
+    _showStyledBottomSheet(
+      title: "Change Password",
+      children: [
+        StatefulBuilder(builder: (context, setModalState) {
+          return Column(
+            children: [
+              _buildTextField("Current Password", oldPass, isPassword: true, obscureText: obscureOld, onToggle: () => setModalState(() => obscureOld = !obscureOld)),
+              const SizedBox(height: 16),
+              _buildTextField("New Password", newPass, isPassword: true, obscureText: obscureNew, onToggle: () => setModalState(() => obscureNew = !obscureNew)),
+              const SizedBox(height: 16),
+              _buildTextField("Confirm New Password", confirmPass, isPassword: true, obscureText: obscureConfirm, onToggle: () => setModalState(() => obscureConfirm = !obscureConfirm)),
+            ],
+          );
+        }),
+        const SizedBox(height: 24),
+        _buildSaveButton(() async {
+          if (newPass.text != confirmPass.text) {
+             CustomNotification.showTopNotification(context, "Passwords do not match");
+             return;
+          }
+          if (newPass.text.length < 6) {
+             CustomNotification.showTopNotification(context, "Password must be at least 6 characters");
+             return;
+          }
+          
+          setState(() => _isLoading = true);
+          try {
+            final res = await _apiService.changePassword(_user!.userId, _user!.role, oldPass.text, newPass.text);
+            if (res.data['success'] == true) {
+               if (mounted) {
+                 Navigator.pop(context);
+                 CustomNotification.showTopNotification(context, "Password changed successfully.", false);
+               }
+            } else {
+               CustomNotification.showTopNotification(context, res.data['message'] ?? "Password update failed.");
+            }
+          } catch (e) {
+            CustomNotification.showTopNotification(context, "Error: $e");
+          } finally {
+            if (mounted) setState(() => _isLoading = false);
+          }
+        }),
+      ],
+    );
+  }
+
+  void _showDataManagementModal() {
+    _showStyledBottomSheet(
+      title: "Data Management",
+      children: [
+        _buildModalActionRow(Icons.visibility_rounded, "View My Data", () => _showMyDataDialog()),
+        _buildModalActionRow(Icons.cleaning_services_rounded, "Clear Local Cache", () {
+           CustomNotification.showTopNotification(context, "Local cache cleared successfully.", false);
+        }),
+        _buildModalActionRow(Icons.delete_forever_rounded, "Delete Account", () => _showDeleteAccountConfirmation(), isDestructive: true),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+
+  void _showMyDataDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text("My Data Summary", style: TextStyle(fontWeight: FontWeight.w900)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildDataText("Name", _user?.name),
+              _buildDataText("Email", _user?.email),
+              _buildDataText("Purok", _user?.purok),
+              _buildDataText("Created At", _user?.createdAt),
+              _buildDataText("Account Status", _user?.isArchived == 0 ? "Active" : "Archived"),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CLOSE")),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showEditProfileModal();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.tealText, foregroundColor: Colors.white),
+            child: const Text("EDIT INFO"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDataText(String label, String? val) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
+          Text(val ?? "N/A", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  void _showDeleteAccountConfirmation() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text("Permanently Delete Account?", style: TextStyle(fontWeight: FontWeight.w900, color: Colors.red)),
+        content: const Text("This action cannot be undone. All your data including complaints and history will be permanently erased."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL", style: TextStyle(color: Colors.black))),
+          TextButton(
+            onPressed: () async {
+              setState(() => _isLoading = true);
+              try {
+                final res = await _apiService.deleteUser(_user!.userId, _user!.role);
+                if (res.data['success'] == true) {
+                   await SessionManager.logout();
+                   if (mounted) Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
+                }
+              } catch (e) {
+                CustomNotification.showTopNotification(context, "Delete failed: $e");
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            child: const Text("DELETE PERMANENTLY", style: TextStyle(color: Colors.red, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showFAQsModal() {
+    _showStyledBottomSheet(
+      title: "FAQs",
+      children: [
+        _buildFAQItem("How do I track a garbage truck?", "Navigate to the 'Track' tab to see real-time locations and live route status in your registered Purok."),
+        _buildFAQItem("How is the ETA calculated?", "The ETA is based on the truck's current GPS position, average speed, and road distance to your purok."),
+        _buildFAQItem("Why is the truck not visible?", "A truck may be finishing its route, idle, or experiencing temporary GPS signal loss in high-density areas."),
+        _buildFAQItem("How do I file a complaint?", "Go to the 'Complaints' tab and tap 'File a Complaint'. You can track our admin's response in real-time."),
+      ],
+    );
+  }
+
+  void _showContactSupportModal() {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32)),
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.phone_in_talk_rounded, color: Color(0xFF2E7D32), size: 28),
+                  SizedBox(width: 12),
+                  Text(
+                    "Contact Support",
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                "Reach out to us if you need help or have any inquiries.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey, fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 32),
+              _buildContactDetailRow(Icons.phone_rounded, "+63 912 345 6789"),
+              const SizedBox(height: 16),
+              _buildContactDetailRow(Icons.email_rounded, "support@garbagetracker.com"),
+              const SizedBox(height: 16),
+              _buildContactDetailRow(Icons.map_rounded, "Barangay Hall, Purok 2, City Center"),
+              const SizedBox(height: 48),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "Close",
+                  style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildContactDetailRow(IconData icon, String value) {
+    return Row(
+      children: [
+        Icon(icon, size: 22, color: Colors.black87),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.black87),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showAboutModal() {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32)),
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.info_outline_rounded, color: Color(0xFF2E7D32), size: 28),
+                  SizedBox(width: 12),
+                  Text(
+                    "About Balintawak Waste Tracker",
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF2E7D32)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                "Balintawak Waste Tracker is a comprehensive garbage truck tracking and management system designed to improve waste collection efficiency in our community.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Color(0xFF424242), fontSize: 14, height: 1.5),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                "Our mission is to provide residents with real-time updates and an easy way to communicate with waste management services, ensuring a cleaner and greener environment for everyone.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Color(0xFF424242), fontSize: 14, height: 1.5),
+              ),
+              const SizedBox(height: 32),
+              const Text(
+                "Version 1.0.0",
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              const Text(
+                "© 2026 Balintawak Waste Tracker Project Team",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              const SizedBox(height: 32),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "Close",
+                  style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- REUSABLE UI HELPERS ---
+
+  void _showStyledBottomSheet({required String title, required List<Widget> children}) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        padding: EdgeInsets.fromLTRB(24, 12, 24, MediaQuery.of(context).viewInsets.bottom + 32),
+        decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(32))),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(10))),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
+                  IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close_rounded)),
+                ],
+              ),
+              const SizedBox(height: 24),
+              ...children,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTextField(String label, TextEditingController controller, {bool isPassword = false, bool obscureText = false, VoidCallback? onToggle, TextInputType? keyboardType, int maxLines = 1}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          obscureText: obscureText,
+          keyboardType: keyboardType,
+          maxLines: maxLines,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: const Color(0xFFF3F5F7),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+            suffixIcon: isPassword ? IconButton(icon: Icon(obscureText ? Icons.visibility_off : Icons.visibility), onPressed: onToggle) : null,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPurokDropdown(String selected, ValueChanged<String?> onChanged) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text("Purok / Area", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey)),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          value: selected,
+          items: _puroks.map((p) => DropdownMenuItem(value: p, child: Text(p, style: const TextStyle(fontWeight: FontWeight.w700)))).toList(),
+          onChanged: onChanged,
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: const Color(0xFFF3F5F7),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSaveButton(VoidCallback onTap) {
+    return SizedBox(
+      width: double.infinity,
+      height: 56,
+      child: ElevatedButton(
+        onPressed: _isLoading ? null : onTap,
+        style: ElevatedButton.styleFrom(backgroundColor: AppColors.tealText, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+        child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : const Text("Save Changes", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16)),
+      ),
+    );
+  }
+
+  Widget _buildModalActionRow(IconData icon, String title, VoidCallback onTap, {bool isDestructive = false}) {
+    return ListTile(
+      leading: Icon(icon, color: isDestructive ? Colors.red : AppColors.tealText),
+      title: Text(title, style: TextStyle(fontWeight: FontWeight.w700, color: isDestructive ? Colors.red : Colors.black87)),
+      trailing: const Icon(Icons.chevron_right_rounded),
+      onTap: onTap,
+    );
+  }
+
+  Widget _buildFAQItem(String q, String a) {
+    return ExpansionTile(
+      title: Text(q, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+      children: [Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Text(a, style: TextStyle(color: Colors.grey.shade700, height: 1.5)))],
+    );
   }
 
   void _showLogoutDialog(BuildContext context) {
-    showDialog(context: context, builder: (context) => Dialog(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(36)), child: Padding(padding: const EdgeInsets.all(36), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(padding: const EdgeInsets.all(20), decoration: const BoxDecoration(color: Color(0xFFFFF0F2), shape: BoxShape.circle), child: const Icon(Icons.power_settings_new_rounded, color: Color(0xFFFF1744), size: 36)),
-      const SizedBox(height: 28),
-      const Text("Secure Sign Out?", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))),
-      const SizedBox(height: 16),
-      const Text("You are about to end your session. All unsaved system reports will be lost.", textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF757575), fontSize: 13, height: 1.5, fontWeight: FontWeight.w500)),
-      const SizedBox(height: 36),
-      ElevatedButton(onPressed: () async { await SessionManager.logout(); if (!mounted) return; Navigator.pushReplacementNamed(context, '/'); }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00897B), minimumSize: const Size(double.infinity, 64), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), elevation: 0), child: const Text("SIGN OUT", style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w900, letterSpacing: 1))),
-      const SizedBox(height: 16),
-      TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL", style: TextStyle(color: Color(0xFFBDBDBD), fontWeight: FontWeight.w900, letterSpacing: 1.2))),
-    ]))));
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text("Sign Out?", style: TextStyle(fontWeight: FontWeight.w900)),
+        content: const Text("Are you sure you want to end your session?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL", style: TextStyle(color: Colors.black))),
+          TextButton(
+            onPressed: () async {
+              await SessionManager.logout();
+              if (mounted) Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
+            },
+            child: const Text("LOGOUT", style: TextStyle(color: Colors.red, fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
   }
 }
 
