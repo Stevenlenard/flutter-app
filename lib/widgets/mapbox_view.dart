@@ -296,15 +296,14 @@ class _MapboxViewState extends State<MapboxView> {
 
   void _updateRoutePolyline(List<Map> points) {
     if (_polylineAnnotationManager == null || points.length < 2) return;
-    
     _polylineAnnotationManager?.deleteAll();
     
     List<Position> currentSegment = [];
-    String currentColor = (points.first['color'] ?? 'BLUE').toString().toUpperCase();
+    String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
     
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
-      final color = (p['color'] ?? 'BLUE').toString().toUpperCase();
+      final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
       final lat = (p['lat'] ?? 0.0).toDouble();
       final lng = (p['lng'] ?? 0.0).toDouble();
       final pos = Position(lng, lat);
@@ -321,13 +320,18 @@ class _MapboxViewState extends State<MapboxView> {
   }
 
   void _drawSegment(List<Position> segment, String colorName) {
-    Color color = colorName == "YELLOW" ? Colors.yellow : Colors.blue;
+    Color color = Colors.green;
+    if (colorName == "YELLOW") color = Colors.yellow;
+    if (colorName == "MAGENTA") color = Colors.pinkAccent;
+    if (colorName == "GRAY") color = Colors.grey;
+
     _polylineAnnotationManager?.create(
       PolylineAnnotationOptions(
         geometry: LineString(coordinates: segment),
         lineColor: color.toARGB32(),
-        lineWidth: 4.0,
+        lineWidth: 6.0,
         lineOpacity: 0.8,
+        lineJoin: LineJoin.ROUND,
       ),
     );
   }

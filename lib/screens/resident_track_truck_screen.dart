@@ -146,29 +146,49 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     if (_polylineAnnotationManager == null || points.length < 2) return;
     _polylineAnnotationManager?.deleteAll();
     List<Position> currentSegment = [];
-    String currentColor = (points.first['color'] ?? 'BLUE').toString().toUpperCase();
+    String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
+    int lastTimestamp = (points.first['timestamp'] ?? 0) as int;
+
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
-      final color = (p['color'] ?? 'BLUE').toString().toUpperCase();
+      final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
       final pos = Position((p['lng'] ?? 0.0).toDouble(), (p['lat'] ?? 0.0).toDouble());
-      if (color != currentColor) {
+      final timestamp = (p['timestamp'] ?? 0) as int;
+
+      bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
+
+      if (isGap) {
+        if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
+        if (currentSegment.isNotEmpty) {
+          _drawSegment([currentSegment.last, pos], "YELLOW", isDashed: true);
+        }
+        currentSegment = [pos];
+        currentColor = color;
+      } else if (color != currentColor) {
         if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
         currentSegment = [currentSegment.isNotEmpty ? currentSegment.last : pos, pos];
         currentColor = color;
       } else {
         currentSegment.add(pos);
       }
+      lastTimestamp = timestamp;
     }
     if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
   }
 
-  void _drawSegment(List<Position> segment, String colorName) {
-    Color color = colorName == "YELLOW" ? Colors.yellow : Colors.blue;
+  void _drawSegment(List<Position> segment, String colorName, {bool isDashed = false}) {
+    Color color = Colors.green;
+    if (colorName == "YELLOW") color = Colors.yellow;
+    if (colorName == "MAGENTA") color = Colors.pinkAccent;
+    if (colorName == "GRAY") color = Colors.grey;
+    if (colorName == "BLUE") color = Colors.blue;
+
     _polylineAnnotationManager?.create(PolylineAnnotationOptions(
       geometry: LineString(coordinates: segment),
       lineColor: color.toARGB32(),
-      lineWidth: 4.0,
-      lineOpacity: 0.8,
+      lineWidth: isDashed ? 3.0 : 8.0,
+      lineOpacity: isDashed ? 0.5 : 0.8,
+      lineJoin: LineJoin.ROUND,
     ));
   }
 
@@ -504,15 +524,35 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   }
 
   Widget _buildFleetGuide() {
-    return Container(margin: const EdgeInsets.all(24), padding: const EdgeInsets.all(28), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), border: Border.all(color: const Color(0xFFF0F0F0)), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 10, offset: const Offset(0, 4))]), child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Tracking Guide", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1A1A1A))), SizedBox(height: 20), _GuideRow(Icons.check_circle_outline_rounded, "Green indicates active collection"), SizedBox(height: 12), _GuideRow(Icons.check_circle_outline_rounded, "Orange indicates idle or stopped unit"), SizedBox(height: 12), _GuideRow(Icons.check_circle_outline_rounded, "Track real-time ETA and road distance")]));
+    return Container(
+      margin: const EdgeInsets.all(24), 
+      padding: const EdgeInsets.all(28), 
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), border: Border.all(color: const Color(0xFFF0F0F0)), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 10, offset: const Offset(0, 4))]), 
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start, 
+        children: [
+          Text("Tracking Guide", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1A1A1A))), 
+          SizedBox(height: 20), 
+          _GuideRow(Icons.circle, "Green: Active collection", color: Colors.green), 
+          SizedBox(height: 12), 
+          _GuideRow(Icons.circle, "Yellow: Idle / Signal issue", color: Colors.yellow), 
+          SizedBox(height: 12), 
+          _GuideRow(Icons.circle, "Magenta: Truck is FULL", color: Colors.pinkAccent),
+          SizedBox(height: 12),
+          _GuideRow(Icons.linear_scale, "Dashed: Signal gap detected", color: Colors.grey),
+          SizedBox(height: 12),
+          _GuideRow(Icons.check_circle_outline_rounded, "Track real-time ETA & distance"),
+        ]
+      )
+    );
   }
 }
 
 class _GuideRow extends StatelessWidget {
-  final IconData icon; final String text;
-  const _GuideRow(this.icon, this.text);
+  final IconData icon; final String text; final Color color;
+  const _GuideRow(this.icon, this.text, {this.color = const Color(0xFF00BFA5)});
   @override
   Widget build(BuildContext context) {
-    return Row(children: [Icon(icon, color: const Color(0xFF00BFA5), size: 18), const SizedBox(width: 12), Expanded(child: Text(text, style: const TextStyle(fontSize: 12, color: Color(0xFF757575), fontWeight: FontWeight.w500)))]);
+    return Row(children: [Icon(icon, color: color, size: 18), const SizedBox(width: 12), Expanded(child: Text(text, style: const TextStyle(fontSize: 12, color: Color(0xFF757575), fontWeight: FontWeight.w500)))]);
   }
 }

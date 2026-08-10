@@ -182,6 +182,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
         'timestamp': ServerValue.timestamp,
         'date': DateFormat('yyyy-MM-dd').format(DateTime.now()),
         'maintenanceProcessed': false,
+        'start_lat': startPos.latitude,
+        'start_lng': startPos.longitude,
       });
 
       // Initialize Progress in Firebase
@@ -198,7 +200,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
       }
       await _database.ref('collection_progress').child(_sessionId!).set(initialProgress);
 
-      _appendRoutePoint(startPos, "ACTIVE", "BLUE");
+      _appendRoutePoint(startPos, "ACTIVE", "GREEN");
 
       if (mounted) {
         setState(() {
@@ -280,9 +282,16 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
     debugPrint("[DRIVER LIVE SHARE] truckId = $truckId, lat = ${pos.latitude}, lng = ${pos.longitude}, status = $_status");
 
-    String trailColor = "BLUE";
-    if (_status == "IDLE") trailColor = "YELLOW";
-    if (_status == "FINISHED") trailColor = "GRAY";
+    // DYNAMIC TRAIL COLOR
+    String trailColor = "GREEN"; 
+    bool poorAccuracy = pos.accuracy > 50;
+    bool slowSpeed = speedKmH < 1.0;
+    
+    if (_status == "FULL") {
+      trailColor = "MAGENTA";
+    } else if (_status == "IDLE" || poorAccuracy || slowSpeed) {
+      trailColor = "YELLOW";
+    }
 
     _appendRoutePoint(pos, _status, trailColor);
   }

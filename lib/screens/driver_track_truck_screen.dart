@@ -124,18 +124,81 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _listenToRoute() {
     if (widget.currentSessionId == null) return;
     _routeSubscription?.cancel();
-    _routeSubscription = _database.ref('driver_routes/${widget.currentSessionId}/route').onValue.listen((event) {
+    _routeSubscription = _database.ref('driver_routes/${widget.currentSessionId}').onValue.listen((event) {
       if (event.snapshot.exists && event.snapshot.value != null) {
         final Map data = event.snapshot.value as Map;
-        final List<Map> points = [];
-        data.forEach((key, value) => points.add(value as Map));
-        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
-        if (mounted && points.length != _lastPoints.length) {
-          _updateRoutePolyline(points);
-          _lastPoints = points;
+        
+        // 1. UPDATE ROUTE TRAIL
+        if (data['route'] != null) {
+          final Map routeData = data['route'] as Map;
+          final List<Map> points = [];
+          routeData.forEach((key, value) => points.add(value as Map));
+          points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
+          if (mounted && points.length != _lastPoints.length) {
+            _updateRoutePolyline(points);
+            _lastPoints = points;
+          }
+        }
+
+        // 2. UPDATE SPECIAL MARKERS (START / FINISH)
+        if (_managersReady) {
+          _updateSpecialMarkers(data);
         }
       }
     });
+  }
+
+  void _updateSpecialMarkers(Map data) async {
+    if (_pointAnnotationManager == null) return;
+
+    // We can use unique tags or IDs to manage these special markers
+    // For simplicity, let's just clear and redraw them if session changed or on update
+    // But better to keep them if they are already there.
+    
+    // START MARKER
+    if (data['start_lat'] != null && data['start_lng'] != null) {
+      final pos = Position(data['start_lng'], data['start_lat']);
+      _addMarkerIfMissing("SESSION_START", pos, "START", Colors.green);
+    }
+
+    // FINISH MARKER
+    if (data['finish_lat'] != null && data['finish_lng'] != null) {
+      final pos = Position(data['finish_lng'], data['finish_lat']);
+      _addMarkerIfMissing("SESSION_FINISH", pos, "🏁 FINISH", Colors.blue);
+    }
+  }
+
+  final Map<String, PointAnnotation> _specialMarkers = {};
+
+  Future<void> _addMarkerIfMissing(String id, Position pos, String label, Color color) async {
+    if (_specialMarkers.containsKey(id)) {
+      // Just update position if needed, but Start/Finish usually stationary
+      return;
+    }
+
+    final marker = await _pointAnnotationManager?.create(PointAnnotationOptions(
+      geometry: Point(coordinates: pos),
+      textField: label,
+      textOffset: [0, -1.5],
+      textColor: color.toARGB32(),
+      textSize: 12.0,
+      textHaloColor: Colors.white.toARGB32(),
+      textHaloWidth: 2.0,
+      iconSize: 0,
+    ));
+
+    if (marker != null) {
+      _specialMarkers[id] = marker;
+      
+      // Optionally add a circle annotation at the same spot for a real "marker" look
+      _circleAnnotationManager?.create(CircleAnnotationOptions(
+        geometry: Point(coordinates: pos),
+        circleRadius: 6.0,
+        circleColor: color.toARGB32(),
+        circleStrokeWidth: 2.0,
+        circleStrokeColor: Colors.white.toARGB32(),
+      ));
+    }
   }
 
   void _onMapCreated(MapboxMap map) {
@@ -319,28 +382,55 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     if (!_managersReady || _polylineAnnotationManager == null || points.length < 2) return;
     _polylineAnnotationManager?.deleteAll();
     List<Position> currentSegment = [];
-    String currentColor = (points.first['color'] ?? 'BLUE').toString().toUpperCase();
+    String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
+    int lastTimestamp = (points.first['timestamp'] ?? 0) as int;
+
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
-      final color = (p['color'] ?? 'BLUE').toString().toUpperCase();
+      final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
       final pos = Position((p['lng'] ?? 0.0).toDouble(), (p['lat'] ?? 0.0).toDouble());
-      if (color != currentColor) {
+      final timestamp = (p['timestamp'] ?? 0) as int;
+
+      // DETECT GPS GAP (e.g., > 45 seconds)
+      bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
+
+      if (isGap) {
+        // End current segment
+        if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
+        
+        // Draw DASHED GAP between last point and current point
+        if (currentSegment.isNotEmpty) {
+          _drawSegment([currentSegment.last, pos], "YELLOW", isDashed: true);
+        }
+        
+        currentSegment = [pos];
+        currentColor = color;
+      } else if (color != currentColor) {
         if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
         currentSegment = [currentSegment.isNotEmpty ? currentSegment.last : pos, pos];
         currentColor = color;
       } else {
         currentSegment.add(pos);
       }
+      
+      lastTimestamp = timestamp;
     }
     if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
   }
 
-  void _drawSegment(List<Position> segment, String colorName) {
-    Color color = colorName == "YELLOW" ? Colors.yellow : Colors.blue;
+  void _drawSegment(List<Position> segment, String colorName, {bool isDashed = false}) {
+    Color color = Colors.green;
+    if (colorName == "YELLOW") color = Colors.yellow;
+    if (colorName == "MAGENTA") color = Colors.pinkAccent;
     if (colorName == "GRAY") color = Colors.grey;
+    if (colorName == "BLUE") color = Colors.blue;
+
     _polylineAnnotationManager?.create(PolylineAnnotationOptions(
       geometry: LineString(coordinates: segment),
-      lineColor: color.toARGB32(), lineWidth: 6.0, lineOpacity: 0.8,
+      lineColor: color.toARGB32(), 
+      lineWidth: isDashed ? 3.0 : 8.0, 
+      lineOpacity: isDashed ? 0.5 : 0.8,
+      lineJoin: LineJoin.ROUND,
     ));
   }
 
@@ -383,6 +473,28 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
                       child: const Text("RE-LOCK GPS", style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                     ),
                   ),
+                ],
+              ),
+            ),
+          ),
+          // MAP LEGEND
+          Positioned(
+            bottom: 20, left: 20,
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4)],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildLegendItem(Colors.green, "Active / Normal"),
+                  _buildLegendItem(Colors.yellow, "Idle / Signal Issue"),
+                  _buildLegendItem(Colors.pinkAccent, "Truck Full"),
+                  _buildLegendItem(Colors.blue, "Start / Finish"),
                 ],
               ),
             ),
@@ -430,6 +542,20 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegendItem(Color color, String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87)),
         ],
       ),
     );
