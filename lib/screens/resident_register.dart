@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../api/api_service.dart';
 import '../utils/app_theme.dart';
+import '../widgets/legal_agreement_dialog.dart';
 
 class ResidentRegisterScreen extends StatefulWidget {
   const ResidentRegisterScreen({super.key});
@@ -23,6 +24,7 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
   bool _isLoading = false;
   bool _obs1 = true;
   bool _obs2 = true;
+  bool _termsAccepted = false;
 
   final List<String> _puroks = ["Purok 2", "Purok 3", "Purok 4", "Dos Riles", "Sentro", "San Isidro", "Paraiso", "Riverside", "Kalaw Street", "Home Subdivision", "Tanco Road / Ayala Highway", "Brixton Area"];
   final ApiService _apiService = ApiService();
@@ -42,6 +44,16 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
       return;
     }
 
+    if (!_termsAccepted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please accept the Terms & Conditions and Privacy Policy to continue.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
@@ -54,6 +66,12 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
         'phone': _phoneController.text.trim(),
         'purok': _selectedPurok,
         'complete_address': _addressController.text.trim(),
+        // Consent Metadata
+        'termsAccepted': 1,
+        'privacyPolicyAccepted': 1,
+        'termsVersion': '1.0',
+        'privacyPolicyVersion': '1.0',
+        'consentTimestamp': DateTime.now().toIso8601String(),
       };
 
       final response = await _apiService.register(registerData);
@@ -155,7 +173,10 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
                               _buildPurokDropdown(),
                               _buildInput(_addressController, 'Complete Address', 'Enter your home address', maxLines: 3, action: TextInputAction.done, icon: Icons.home_outlined),
 
-                              const SizedBox(height: 48),
+                              const SizedBox(height: 32),
+                              _buildTermsCheckbox(),
+
+                              const SizedBox(height: 32),
 
                               _buildSubmitButton(),
 
@@ -178,21 +199,56 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
                         ),
                       ),
                       const SizedBox(height: 48),
-                      const Column(
-                        children: [
-                          Text(
-                            '© 2026 Brgy. Balintawak Lipa City',
-                            style: TextStyle(
-                              color: Color(0xFF00796B),
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Column(
+                          children: [
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              spacing: 12,
+                              children: [
+                                GestureDetector(
+                                  onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+                                  child: const Text(
+                                    'Terms & Conditions',
+                                    style: TextStyle(
+                                      color: AppColors.tealLink,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                                const Text('•', style: TextStyle(color: AppColors.textGray)),
+                                GestureDetector(
+                                  onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+                                  child: const Text(
+                                    'Privacy Policy',
+                                    style: TextStyle(
+                                      color: AppColors.tealLink,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                          Text(
-                            'All rights reserved',
-                            style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
-                          ),
-                        ],
+                            const SizedBox(height: 12),
+                            const Text(
+                              '© 2026 Brgy. Balintawak Lipa City',
+                              style: TextStyle(
+                                color: Color(0xFF00796B),
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const Text(
+                              'All rights reserved',
+                              style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 24),
                     ],
@@ -203,6 +259,52 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTermsCheckbox() {
+    return Row(
+      children: [
+        SizedBox(
+          height: 24,
+          width: 24,
+          child: Checkbox(
+            value: _termsAccepted,
+            onChanged: (v) => setState(() => _termsAccepted = v ?? false),
+            activeColor: AppColors.tealText,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Wrap(
+            children: [
+              const Text(
+                'I have read and agree to the ',
+                style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500),
+              ),
+              GestureDetector(
+                onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+                child: const Text(
+                  'Terms & Conditions',
+                  style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
+                ),
+              ),
+              const Text(
+                ' and ',
+                style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500),
+              ),
+              GestureDetector(
+                onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+                child: const Text(
+                  'Privacy Policy',
+                  style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

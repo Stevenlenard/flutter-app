@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../api/api_service.dart';
 import '../utils/app_theme.dart';
+import '../widgets/legal_agreement_dialog.dart';
 
 class DriverRegisterScreen extends StatefulWidget {
   const DriverRegisterScreen({super.key});
@@ -23,6 +24,7 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
   bool _isLoading = false;
   bool _obs1 = true;
   bool _obs2 = true;
+  bool _termsAccepted = false;
 
   void _submitRequest() async {
     if (!_formKey.currentState!.validate()) return;
@@ -30,6 +32,16 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
     if (_passwordController.text != _confirmPasswordController.text) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Passwords do not match')),
+      );
+      return;
+    }
+
+    if (!_termsAccepted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please accept the Terms & Conditions and Privacy Policy to continue.'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
@@ -46,6 +58,12 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
         'phone': _phoneController.text.trim(),
         'license_number': _licenseController.text.trim(),
         'preferred_truck': _truckController.text.trim(),
+        // Consent Metadata
+        'termsAccepted': 1,
+        'privacyPolicyAccepted': 1,
+        'termsVersion': '1.0',
+        'privacyPolicyVersion': '1.0',
+        'consentTimestamp': DateTime.now().toIso8601String(),
       };
 
       final response = await ApiService().register(registerData);
@@ -147,7 +165,10 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
                               _buildInput(_phoneController, 'Contact Number', 'Enter your phone number', icon: Icons.phone_android_outlined),
                               _buildInput(_truckController, 'Preferred Truck (Optional)', 'Enter truck assignment', action: TextInputAction.done, icon: Icons.local_shipping_outlined),
 
-                              const SizedBox(height: 48),
+                              const SizedBox(height: 32),
+                              _buildTermsCheckbox(),
+
+                              const SizedBox(height: 32),
 
                               _buildSubmitButton(),
 
@@ -170,21 +191,56 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
                         ),
                       ),
                       const SizedBox(height: 48),
-                      const Column(
-                        children: [
-                          Text(
-                            '© 2026 Brgy. Balintawak Lipa City',
-                            style: TextStyle(
-                              color: Color(0xFF00796B),
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Column(
+                          children: [
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              spacing: 12,
+                              children: [
+                                GestureDetector(
+                                  onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+                                  child: const Text(
+                                    'Terms & Conditions',
+                                    style: TextStyle(
+                                      color: AppColors.tealLink,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                                const Text('•', style: TextStyle(color: AppColors.textGray)),
+                                GestureDetector(
+                                  onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+                                  child: const Text(
+                                    'Privacy Policy',
+                                    style: TextStyle(
+                                      color: AppColors.tealLink,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                          Text(
-                            'All rights reserved',
-                            style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
-                          ),
-                        ],
+                            const SizedBox(height: 12),
+                            const Text(
+                              '© 2026 Brgy. Balintawak Lipa City',
+                              style: TextStyle(
+                                color: Color(0xFF00796B),
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const Text(
+                              'All rights reserved',
+                              style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 24),
                     ],
@@ -195,6 +251,52 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTermsCheckbox() {
+    return Row(
+      children: [
+        SizedBox(
+          height: 24,
+          width: 24,
+          child: Checkbox(
+            value: _termsAccepted,
+            onChanged: (v) => setState(() => _termsAccepted = v ?? false),
+            activeColor: AppColors.tealText,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Wrap(
+            children: [
+              const Text(
+                'I have read and agree to the ',
+                style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500),
+              ),
+              GestureDetector(
+                onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+                child: const Text(
+                  'Terms & Conditions',
+                  style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
+                ),
+              ),
+              const Text(
+                ' and ',
+                style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500),
+              ),
+              GestureDetector(
+                onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+                child: const Text(
+                  'Privacy Policy',
+                  style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

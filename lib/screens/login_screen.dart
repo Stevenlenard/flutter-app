@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../api/api_service.dart';
 import '../api/api_client.dart';
 import '../utils/session_manager.dart';
 import '../utils/app_theme.dart';
 import '../utils/system_logger.dart';
+import '../utils/login_security_manager.dart';
+import '../widgets/legal_agreement_dialog.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -20,22 +23,83 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   final ApiService _apiService = ApiService();
 
+  // Security & Lockout State
+  SecurityStatus? _securityStatus;
+  Timer? _lockoutTimer;
+  int _secondsRemaining = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkInitialSecurity();
+  }
+
+  @override
+  void dispose() {
+    _lockoutTimer?.cancel();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  void _checkInitialSecurity() async {
+    // We'll check security whenever username changes or on button press
+    // For now, let's just initialize
+  }
+
+  void _startLockoutCountdown(DateTime lockoutUntil) {
+    _lockoutTimer?.cancel();
+    void updateTimer() {
+      final now = DateTime.now();
+      final diff = lockoutUntil.difference(now);
+      if (diff.isNegative) {
+        setState(() {
+          _secondsRemaining = 0;
+          _securityStatus = SecurityStatus(attempts: 0, isLocked: false);
+        });
+        _lockoutTimer?.cancel();
+      } else {
+        setState(() {
+          _secondsRemaining = diff.inSeconds;
+        });
+      }
+    }
+    updateTimer();
+    _lockoutTimer = Timer.periodic(const Duration(seconds: 1), (timer) => updateTimer());
+  }
+
   void _handleLogin() async {
+    final username = _usernameController.text.trim();
+    if (username.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter your username')));
+      return;
+    }
+
+    // 1. Check Security Status first
+    final status = await LoginSecurityManager.checkStatus(username);
+    if (status.isLocked) {
+      setState(() => _securityStatus = status);
+      _startLockoutCountdown(status.lockoutUntil!);
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
 
-    final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
 
     setState(() => _isLoading = true);
 
     try {
-      debugPrint("Connecting to: ${ApiClient.baseUrl}"); // DEBUG LOG
+      debugPrint("Connecting to: ${ApiClient.baseUrl}");
       final response = await _apiService.login(username, password);
       final data = response.data;
       
-      debugPrint("Login Response: $data"); // LOG PARA SA DEBUGGING
+      debugPrint("Login Response: $data");
 
       if (data is Map && data['success'] == true) {
+        // Reset security on success
+        await LoginSecurityManager.resetAttempts(username);
+
         final user = data['user'];
         if (user == null || user is! Map) {
           if (!mounted) return;
@@ -45,22 +109,17 @@ class _LoginScreenState extends State<LoginScreen> {
           return;
         }
 
-        // Mas maluwag na check para sa 2FA
         if (data['message'].toString().toUpperCase().contains('2FA_REQUIRED')) {
           if (!mounted) return;
-          debugPrint("Navigating to 2FA Screen with user: ${user['email']}");
           Navigator.pushNamed(context, '/verify_2fa', arguments: user);
           return;
         }
 
         await SessionManager.saveUser(Map<String, dynamic>.from(user));
-
-        // Log successful login
         await SystemLogger.logEvent("LOGIN", "Successful login from ${user['name'] ?? 'Admin'}");
 
         if (!mounted) return;
 
-        // Navigate based on role
         String role = user['role'].toString().toLowerCase();
         if (role == 'admin') {
           Navigator.pushReplacementNamed(context, '/admin_dashboard');
@@ -70,10 +129,15 @@ class _LoginScreenState extends State<LoginScreen> {
           Navigator.pushReplacementNamed(context, '/driver_dashboard');
         }
       } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(data['message'] ?? 'Login failed')),
-        );
+        // Record failed attempt
+        final newStatus = await LoginSecurityManager.recordFailedAttempt(username);
+        setState(() {
+          _securityStatus = newStatus;
+        });
+
+        if (newStatus.isLocked) {
+          _startLockoutCountdown(newStatus.lockoutUntil!);
+        }
       }
     } catch (e) {
       if (!mounted) return;
@@ -222,7 +286,84 @@ class _LoginScreenState extends State<LoginScreen> {
                                     ),
                                   ),
                                 ),
-                                const SizedBox(height: 40),
+                                const SizedBox(height: 12),
+
+                                // FAILED ATTEMPTS WARNING
+                                if (_securityStatus != null && _securityStatus!.attempts > 0 && !_securityStatus!.isLocked)
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(12),
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.orange.shade50,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(color: Colors.orange.shade200),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.warning_amber_rounded, color: Colors.orange.shade900, size: 18),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            'Incorrect email or password. You have ${_securityStatus!.remainingAttempts} attempts remaining.',
+                                            style: TextStyle(color: Colors.orange.shade900, fontSize: 13, fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                if (_securityStatus?.isLocked == true)
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 20),
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red.shade50,
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(color: Colors.red.shade200),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Icon(Icons.lock_clock_rounded, color: Colors.red.shade900, size: 20),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Text(
+                                                'Too many failed login attempts.',
+                                                style: TextStyle(color: Colors.red.shade900, fontWeight: FontWeight.bold),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Text(
+                                          'Login is temporarily disabled for 1 minute.',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(color: Colors.red.shade900, fontSize: 13, fontWeight: FontWeight.w500),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'Try again in: ${(_secondsRemaining ~/ 60).toString().padLeft(2, '0')}:${(_secondsRemaining % 60).toString().padLeft(2, '0')}',
+                                          style: TextStyle(
+                                            color: Colors.red.shade900,
+                                            fontSize: 24,
+                                            fontWeight: FontWeight.w900,
+                                            fontFamily: 'monospace',
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        TextButton.icon(
+                                          onPressed: () => Navigator.pushNamed(context, '/forgot_password'),
+                                          icon: const Icon(Icons.refresh_rounded, size: 18),
+                                          label: const Text('Reset your password'),
+                                          style: TextButton.styleFrom(foregroundColor: Colors.red.shade900),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                const SizedBox(height: 20),
 
                                 _buildAnimatedLoginButton(),
 
@@ -252,21 +393,56 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                         const Spacer(flex: 2),
-                        const Column(
-                          children: [
-                            Text(
-                              '© 2026 Brgy. Balintawak Lipa City',
-                              style: TextStyle(
-                                color: Color(0xFF00796B),
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: Column(
+                            children: [
+                              Wrap(
+                                alignment: WrapAlignment.center,
+                                spacing: 12,
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+                                    child: const Text(
+                                      'Terms & Conditions',
+                                      style: TextStyle(
+                                        color: AppColors.tealLink,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ),
+                                  const Text('•', style: TextStyle(color: AppColors.textGray)),
+                                  GestureDetector(
+                                    onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+                                    child: const Text(
+                                      'Privacy Policy',
+                                      style: TextStyle(
+                                        color: AppColors.tealLink,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
-                            Text(
-                              'All rights reserved',
-                              style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
-                            ),
-                          ],
+                              const SizedBox(height: 12),
+                              const Text(
+                                '© 2026 Brgy. Balintawak Lipa City',
+                                style: TextStyle(
+                                  color: Color(0xFF00796B),
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const Text(
+                                'All rights reserved',
+                                style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 24),
                       ],
@@ -359,18 +535,26 @@ class _LoginScreenState extends State<LoginScreen> {
   double _buttonScale = 1.0;
 
   Widget _buildAnimatedLoginButton() {
+    bool isLocked = _securityStatus?.isLocked == true;
     return GestureDetector(
-      onTapDown: (_) => setState(() => _buttonScale = 0.95),
-      onTapUp: (_) => setState(() => _buttonScale = 1.0),
-      onTapCancel: () => setState(() => _buttonScale = 1.0),
-      onTap: _isLoading ? null : _handleLogin,
+      onTapDown: isLocked ? null : (_) => setState(() => _buttonScale = 0.95),
+      onTapUp: isLocked ? null : (_) => setState(() => _buttonScale = 1.0),
+      onTapCancel: isLocked ? null : () => setState(() => _buttonScale = 1.0),
+      onTap: (_isLoading || isLocked) ? null : _handleLogin,
       child: AnimatedScale(
         scale: _buttonScale,
         duration: const Duration(milliseconds: 100),
         child: Container(
           width: double.infinity,
           height: 60,
-          decoration: AppDecorations.loginButton,
+          decoration: isLocked
+              ? AppDecorations.loginButton.copyWith(
+                  gradient: LinearGradient(
+                    colors: [Colors.grey.shade400, Colors.grey.shade500],
+                  ),
+                  boxShadow: [],
+                )
+              : AppDecorations.loginButton,
           alignment: Alignment.center,
           child: _isLoading
               ? const SizedBox(
@@ -378,9 +562,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   height: 24,
                   child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
                 )
-              : const Text(
-                  'Sign In',
-                  style: TextStyle(
+              : Text(
+                  isLocked ? 'Locked' : 'Sign In',
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 18,
                     fontWeight: FontWeight.w900,

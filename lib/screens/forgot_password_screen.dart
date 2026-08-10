@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../utils/app_theme.dart';
 import '../api/api_service.dart';
 import '../api/api_client.dart';
+import '../widgets/legal_agreement_dialog.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -448,11 +449,57 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   }
 
   Widget _buildFooter() {
-    return const Column(
-      children: [
-        Text('© 2026 Brgy. Balintawak Lipa City', style: TextStyle(color: Color(0xFF00796B), fontSize: 13, fontWeight: FontWeight.bold)),
-        Text('All rights reserved', style: TextStyle(color: Color(0xFF00796B), fontSize: 11)),
-      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            children: [
+              GestureDetector(
+                onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+                child: const Text(
+                  'Terms & Conditions',
+                  style: TextStyle(
+                    color: AppColors.tealLink,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+              ),
+              const Text('•', style: TextStyle(color: AppColors.textGray)),
+              GestureDetector(
+                onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+                child: const Text(
+                  'Privacy Policy',
+                  style: TextStyle(
+                    color: AppColors.tealLink,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '© 2026 Brgy. Balintawak Lipa City',
+            style: TextStyle(
+              color: Color(0xFF00796B),
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const Text(
+            'All rights reserved',
+            style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
+          ),
+        ],
+      ),
     );
+
   }
 }
