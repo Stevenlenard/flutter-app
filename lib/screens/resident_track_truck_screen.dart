@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' hide Size;
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' hide Size, Visibility;
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mbox show Visibility;
 import 'package:pointer_interceptor/pointer_interceptor.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import '../utils/prediction_engine.dart';
@@ -105,11 +106,11 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
         });
 
         final List<Map<dynamic, dynamic>> list = uniqueTrucks.values.toList();
-        
+
         if (mounted) {
           debugPrint("RESIDENT TRACK DEBUG: Found ${list.length} active trucks");
           for (var t in list) {
-            debugPrint("[RESIDENT LISTENER] truckId = ${t['truck_id']}, lat received = ${t['latitude']}, lng received = ${t['longitude']}, status received = ${t['status']}");
+            debugPrint("[RESIDENT LISTENER] truckId = ${t['truck_id']}, lat = ${t['latitude']}, lng = ${t['longitude']}, status = ${t['status']}");
           }
           setState(() => _trucks = list);
           _updateTruckMarkers();
@@ -201,9 +202,10 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   }
 
   void _onStyleLoaded(dynamic data) async {
+    // 1. DISABLE NATIVE BLUE PUCK (We will use a custom one for better layering)
     mapboxMap?.location.updateSettings(LocationComponentSettings(
-      enabled: true,
-      pulsingEnabled: true,
+      enabled: false,
+      pulsingEnabled: false,
     ));
     
     _polylineAnnotationManager = await mapboxMap?.annotations.createPolylineAnnotationManager();
@@ -216,52 +218,44 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     _recenterToBalintawak();
   }
 
-  void _updateTruckMarkers() async {
-    if (!_managersReady || mapboxMap == null) return;
-    
-    if (_trucks.isEmpty) {
-       // Optional: could remove layers if empty, but updateSource with empty FeatureCollection is cleaner
-    }
+  bool _isUpdatingMarkers = false;
 
+  void _updateTruckMarkers() async {
+    if (mapboxMap == null || _isUpdatingMarkers) return;
+    _isUpdatingMarkers = true;
+    
     final String sourceId = "trucks-live-location-source";
     final String circleLayerId = "trucks-live-location-circle";
     final String labelLayerId = "trucks-live-location-label";
 
+    final List<Map<String, dynamic>> features = _trucks
+        .where((t) => (t['latitude'] ?? 0) != 0 && (t['longitude'] ?? 0) != 0)
+        .map((truck) {
+      final double lat = (truck['latitude'] ?? 0.0).toDouble();
+      final double lng = (truck['longitude'] ?? 0.0).toDouble();
+      final String tid = truck['truck_id'].toString();
+      final String status = (truck['status'] ?? 'IDLE').toString().toUpperCase();
+      
+      return {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [lng, lat]
+        },
+        "properties": {
+          "truckId": tid,
+          "status": status,
+          "label": "DRIVER\n$tid"
+        }
+      };
+    }).toList();
+
     final featureCollection = {
       "type": "FeatureCollection",
-      "features": _trucks.map((truck) {
-        final double lat = (truck['latitude'] ?? 0.0).toDouble();
-        final double lng = (truck['longitude'] ?? 0.0).toDouble();
-        final String tid = truck['truck_id'].toString();
-        final String status = (truck['status'] ?? 'IDLE').toString().toUpperCase();
-        
-        // 1. COLLISION DETECTION: Check distance to Resident
-        List<double> translate = [0.0, 0.0];
-        if (_residentPosition != null) {
-          double dist = geo.Geolocator.distanceBetween(lat, lng, _residentPosition!.latitude, _residentPosition!.longitude);
-          // If within 15 meters, apply a visual offset (translate)
-          if (dist < 15.0) {
-            translate = [0.0, -25.0]; // Move Driver marker 25 pixels UP in screen space
-          }
-        }
-
-        return {
-          "type": "Feature",
-          "geometry": {
-            "type": "Point",
-            "coordinates": [lng, lat]
-          },
-          "properties": {
-            "truckId": tid,
-            "status": status,
-            "label": "DRIVER\n$tid",
-            "translate": translate
-          }
-        };
-      }).toList()
+      "features": features
     };
 
-    // 2. Add Resident "YOU" label
+    // 2. Resident "YOU" label
     final residentFeature = _residentPosition == null ? null : {
       "type": "Feature",
       "geometry": {
@@ -269,38 +263,76 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
         "coordinates": [_residentPosition!.longitude, _residentPosition!.latitude]
       },
       "properties": {
-        "label": "YOU"
+        "label": "YOU / RESIDENT"
       }
     };
 
-    debugPrint("[RESIDENT MAP] Updating Source: ready=${mapboxMap != null} features=${_trucks.length}");
-
     try {
-      if (!_truckLayersCreated) {
+      final style = mapboxMap!.style;
+      bool layersExist = await style.styleLayerExists(circleLayerId) && 
+                         await style.styleLayerExists(labelLayerId);
+
+      if (!_truckLayersCreated || !layersExist) {
+        debugPrint("[RESIDENT MAP] Creating Source and Layers...");
+        
+        // Clean up previous attempts
+        try { await style.removeStyleLayer(circleLayerId); } catch (_) {}
+        try { await style.removeStyleLayer(labelLayerId); } catch (_) {}
+        try { await style.removeStyleLayer("resident-marker-circle"); } catch (_) {}
+        try { await style.removeStyleLayer("resident-marker-label"); } catch (_) {}
+        try { await style.removeStyleSource(sourceId); } catch (_) {}
+        try { await style.removeStyleSource("resident-marker-source"); } catch (_) {}
+
         // 1. CREATE TRUCK SOURCE
-        await mapboxMap?.style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
+        await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
 
         // 2. CREATE RESIDENT SOURCE
-        await mapboxMap?.style.addSource(GeoJsonSource(id: "resident-marker-source", data: jsonEncode({
+        await style.addSource(GeoJsonSource(id: "resident-marker-source", data: jsonEncode({
           "type": "FeatureCollection",
           "features": residentFeature != null ? [residentFeature] : []
         })));
 
-        // 3. CREATE CIRCLE LAYER
-        await mapboxMap?.style.addLayer(CircleLayer(
-          id: circleLayerId,
-          sourceId: sourceId,
-          circleRadius: 8.0, 
-          circleColor: Colors.green.toARGB32(),
-          circleOpacity: 1.0,
+        // 3. CREATE RESIDENT CIRCLE LAYER
+        await style.addLayer(CircleLayer(
+          id: "resident-marker-circle",
+          sourceId: "resident-marker-source",
+          circleRadius: 7.0,
+          circleColor: Colors.blue.toARGB32(),
           circleStrokeWidth: 3.0,
           circleStrokeColor: Colors.white.toARGB32(),
-          circleSortKey: 3000.0, // Bring to front
-          circleTranslateExpression: ["get", "translate"], 
+          circleSortKey: 2000.0, 
+          visibility: mbox.Visibility.VISIBLE,
         ));
 
-        // 4. CREATE LABEL LAYER
-        await mapboxMap?.style.addLayer(SymbolLayer(
+        // 4. CREATE RESIDENT LABEL LAYER
+        await style.addLayer(SymbolLayer(
+          id: "resident-marker-label",
+          sourceId: "resident-marker-source",
+          textField: "{label}",
+          textSize: 10.0,
+          textColor: Colors.blue.toARGB32(),
+          textHaloColor: Colors.white.toARGB32(),
+          textHaloWidth: 2.0,
+          textAnchor: TextAnchor.TOP,
+          textOffset: [0, 1.2],
+          symbolSortKey: 2000.0,
+          visibility: mbox.Visibility.VISIBLE,
+        ));
+
+        // 5. CREATE TRUCK CIRCLE LAYER
+        await style.addLayer(CircleLayer(
+          id: circleLayerId,
+          sourceId: sourceId,
+          circleRadius: 9.0,
+          circleColor: Colors.green.toARGB32(),
+          circleStrokeWidth: 3.0,
+          circleStrokeColor: Colors.white.toARGB32(),
+          circleSortKey: 3000.0,
+          visibility: mbox.Visibility.VISIBLE,
+        ));
+
+        // 6. CREATE TRUCK LABEL LAYER
+        await style.addLayer(SymbolLayer(
           id: labelLayerId,
           sourceId: sourceId,
           textField: "{label}",
@@ -313,41 +345,24 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
           symbolSortKey: 3000.0,
           textAllowOverlap: true,
           iconAllowOverlap: true,
-          textTranslateExpression: ["get", "translate"],
-        ));
-
-        // 5. CREATE RESIDENT LABEL LAYER (ABOVE THE PUCK)
-        await mapboxMap?.style.addLayer(SymbolLayer(
-          id: "resident-marker-label",
-          sourceId: "resident-marker-source",
-          textField: "{label}",
-          textSize: 11.0,
-          textColor: Colors.blue.toARGB32(),
-          textHaloColor: Colors.white.toARGB32(),
-          textHaloWidth: 2.0,
-          textAnchor: TextAnchor.TOP,
-          textOffset: [0, 1.2],
-          symbolSortKey: 2900.0,
+          visibility: mbox.Visibility.VISIBLE,
         ));
 
         if (mounted) setState(() => _truckLayersCreated = true);
-        debugPrint("[RESIDENT MAP] Truck layers created with collision handling.");
       } else {
         // UPDATE SOURCES
-        try {
-          await mapboxMap?.style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
-          await mapboxMap?.style.setStyleSourceProperty("resident-marker-source", "data", jsonEncode({
-            "type": "FeatureCollection",
-            "features": residentFeature != null ? [residentFeature] : []
-          }));
-        } catch (e) {
-          // Re-create if missing
-        }
+        await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
+        await style.setStyleSourceProperty("resident-marker-source", "data", jsonEncode({
+          "type": "FeatureCollection",
+          "features": residentFeature != null ? [residentFeature] : []
+        }));
       }
     } catch (e) {
-      debugPrint("[RESIDENT MAP] Error updating truck markers: $e");
+      debugPrint("[RESIDENT MAP] Marker Update Error: $e");
+      if (mounted) setState(() => _truckLayersCreated = false);
+    } finally {
+      _isUpdatingMarkers = false;
     }
-  }
   }
 
   @override
@@ -390,7 +405,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     return Row(children: [
       Expanded(child: Stack(children: [
         Positioned.fill(child: MapWidget(onMapCreated: _onMapCreated, onStyleLoadedListener: _onStyleLoaded, viewport: CameraViewportState(center: Point(coordinates: Position(121.1623, 13.9413)), zoom: 14.5))), 
-        _buildHeader()
+        _buildHeader(),
+        _buildDebugOverlay()
       ])),
       Container(width: 400, decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withAlpha(10), blurRadius: 20, offset: const Offset(-5, 0))]), child: _buildFleetStatusContent(null))
     ]);
@@ -400,8 +416,31 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     return Stack(children: [
       Positioned.fill(child: MapWidget(onMapCreated: _onMapCreated, onStyleLoadedListener: _onStyleLoaded, viewport: CameraViewportState(center: Point(coordinates: Position(121.1623, 13.9413)), zoom: 14.5))),
       _buildHeader(),
+      _buildDebugOverlay(),
       Positioned.fill(child: DraggableScrollableSheet(initialChildSize: 0.45, minChildSize: 0.18, maxChildSize: 0.95, snap: true, snapSizes: const [0.18, 0.45, 0.95], builder: (context, scrollController) => PointerInterceptor(child: Container(decoration: BoxDecoration(color: Colors.white, borderRadius: const BorderRadius.vertical(top: Radius.circular(40)), boxShadow: [BoxShadow(color: Colors.black.withAlpha(20), blurRadius: 25, spreadRadius: 5, offset: const Offset(0, -5))]), child: _buildFleetStatusContent(scrollController, isMobile: true)))))
     ]);
+  }
+
+  Widget _buildDebugOverlay() {
+    final activeTrucksWithGps = _trucks.where((t) => (t['latitude'] ?? 0) != 0).toList();
+    return Positioned(
+      top: 100, right: 20,
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        color: Colors.black54,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text("DATA TRUCKS: ${_trucks.length}", style: const TextStyle(color: Colors.white, fontSize: 10)),
+            Text("GPS TRUCKS: ${activeTrucksWithGps.length}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+            ...activeTrucksWithGps.map((t) => Text("${t['truck_id']}: ${t['latitude']}, ${t['longitude']}", style: const TextStyle(color: Colors.greenAccent, fontSize: 9))),
+            Text("MAP READY: ${mapboxMap != null}", style: const TextStyle(color: Colors.white, fontSize: 10)),
+            Text("LAYERS READY: $_truckLayersCreated", style: const TextStyle(color: Colors.white, fontSize: 10)),
+            Text("RESIDENT LOC: ${_residentPosition != null}", style: const TextStyle(color: Colors.white, fontSize: 10)),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildHeader() {

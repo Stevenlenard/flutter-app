@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' hide Size;
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' hide Size, Visibility;
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mbox show Visibility;
 import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import '../utils/app_theme.dart';
@@ -19,8 +20,6 @@ class MapboxView extends StatefulWidget {
 
 class _MapboxViewState extends State<MapboxView> {
   MapboxMap? _map;
-  PointAnnotationManager? _pointAnnotationManager;
-  CircleAnnotationManager? _circleAnnotationManager;
   PolylineAnnotationManager? _polylineAnnotationManager;
   
   final FirebaseDatabase _database = FirebaseDatabase.instance;
@@ -29,6 +28,7 @@ class _MapboxViewState extends State<MapboxView> {
 
   bool _truckLayersCreated = false;
   bool _managersReady = false;
+  bool _isUpdatingMarkers = false;
 
   final Position _balintawakCenter = Position(121.1623, 13.9413);
 
@@ -120,7 +120,8 @@ class _MapboxViewState extends State<MapboxView> {
   }
 
   void _updateTruckMarkers(Map<String, Map<dynamic, dynamic>> trucksData) async {
-    if (!_managersReady || _map == null) return;
+    if (_map == null || !_managersReady || _isUpdatingMarkers) return;
+    _isUpdatingMarkers = true;
 
     final String sourceId = "trucks-live-location-source";
     final String circleLayerId = "trucks-live-location-circle";
@@ -134,16 +135,6 @@ class _MapboxViewState extends State<MapboxView> {
         final double lat = (data['latitude'] ?? 0.0).toDouble();
         final double lng = (data['longitude'] ?? 0.0).toDouble();
         
-        // 1. COLLISION DETECTION: Check distance to Resident
-        List<double> translate = [0.0, 0.0];
-        if (_residentPosition != null) {
-          double dist = geo.Geolocator.distanceBetween(lat, lng, _residentPosition!.latitude, _residentPosition!.longitude);
-          // If within 15 meters, apply a visual offset (translate)
-          if (dist < 15.0) {
-            translate = [0.0, -25.0]; // Move Driver marker 25 pixels UP in screen space
-          }
-        }
-
         return {
           "type": "Feature",
           "geometry": {
@@ -152,54 +143,111 @@ class _MapboxViewState extends State<MapboxView> {
           },
           "properties": {
             "truckId": truckId,
-            "label": "DRIVER\n$truckId",
-            "translate": translate
+            "label": "DRIVER\n$truckId"
           }
         };
       }).toList()
     };
 
+    // 2. Resident "YOU" feature
+    final residentFeature = _residentPosition == null ? null : {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [_residentPosition!.longitude, _residentPosition!.latitude]
+      },
+      "properties": {
+        "label": "YOU"
+      }
+    };
+
     try {
-      if (!_truckLayersCreated) {
-        await _map?.style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
-        
-        await _map?.style.addLayer(CircleLayer(
+      final style = _map!.style;
+      bool layersExist = await style.styleLayerExists(circleLayerId) && 
+                         await style.styleLayerExists(labelLayerId);
+
+      if (!_truckLayersCreated || !layersExist) {
+        // CLEANUP
+        try { await style.removeStyleLayer(circleLayerId); } catch (_) {}
+        try { await style.removeStyleLayer(labelLayerId); } catch (_) {}
+        try { await style.removeStyleLayer("resident-marker-circle"); } catch (_) {}
+        try { await style.removeStyleLayer("resident-marker-label"); } catch (_) {}
+        try { await style.removeStyleSource(sourceId); } catch (_) {}
+        try { await style.removeStyleSource("resident-marker-source"); } catch (_) {}
+
+        // SOURCES
+        await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
+        await style.addSource(GeoJsonSource(id: "resident-marker-source", data: jsonEncode({
+          "type": "FeatureCollection",
+          "features": residentFeature != null ? [residentFeature] : []
+        })));
+
+        // RESIDENT CIRCLE
+        await style.addLayer(CircleLayer(
+          id: "resident-marker-circle",
+          sourceId: "resident-marker-source",
+          circleRadius: 6.0,
+          circleColor: Colors.blue.toARGB32(),
+          circleStrokeWidth: 2.0,
+          circleStrokeColor: Colors.white.toARGB32(),
+          circleSortKey: 2000.0,
+          visibility: mbox.Visibility.VISIBLE,
+        ));
+
+        // TRUCK CIRCLE
+        await style.addLayer(CircleLayer(
           id: circleLayerId,
           sourceId: sourceId,
           circleRadius: 8.0,
           circleColor: Colors.green.toARGB32(),
           circleStrokeWidth: 3.0,
           circleStrokeColor: Colors.white.toARGB32(),
-          circleSortKey: 2000.0,
-          circleTranslate: ["get", "translate"], // DYNAMIC OFFSET
+          circleSortKey: 3000.0, // TOP
+          visibility: mbox.Visibility.VISIBLE,
         ));
 
-        await _map?.style.addLayer(SymbolLayer(
+        // TRUCK LABEL
+        await style.addLayer(SymbolLayer(
           id: labelLayerId,
           sourceId: sourceId,
           textField: "{label}",
-          textSize: 11.0,
+          textSize: 10.0,
           textColor: Colors.green.toARGB32(),
           textHaloColor: Colors.white.toARGB32(),
           textHaloWidth: 2.0,
           textAnchor: TextAnchor.BOTTOM,
           textOffset: [0, -1.2],
-          symbolSortKey: 2000.0,
+          symbolSortKey: 3000.0, // TOP
           textAllowOverlap: true,
           iconAllowOverlap: true,
-          textTranslate: ["get", "translate"], // DYNAMIC OFFSET
+          visibility: mbox.Visibility.VISIBLE,
+        ));
+
+        // RESIDENT LABEL
+        await style.addLayer(SymbolLayer(
+          id: "resident-marker-label",
+          sourceId: "resident-marker-source",
+          textField: "{label}",
+          textSize: 9.0,
+          textColor: Colors.blue.toARGB32(),
+          textHaloColor: Colors.white.toARGB32(),
+          textHaloWidth: 1.5,
+          textAnchor: TextAnchor.TOP,
+          textOffset: [0, 1.2],
+          symbolSortKey: 2000.0,
+          visibility: mbox.Visibility.VISIBLE,
         ));
 
         if (mounted) setState(() => _truckLayersCreated = true);
       } else {
-        try {
-          await _map?.style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
-        } catch (e) {
-          await _map?.style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
-        }
+        await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
+        await style.setStyleSourceProperty("resident-marker-source", "data", jsonEncode({
+          "type": "FeatureCollection",
+          "features": residentFeature != null ? [residentFeature] : []
+        }));
       }
       
-      // Setup route subs for any new trucks
+      // Setup route subs
       for (var entry in trucksData.entries) {
         final tid = entry.key;
         final sid = entry.value['current_session']?.toString();
@@ -210,6 +258,9 @@ class _MapboxViewState extends State<MapboxView> {
 
     } catch (e) {
       debugPrint("[DASHBOARD MAP] Error: $e");
+      if (mounted) setState(() => _truckLayersCreated = false);
+    } finally {
+      _isUpdatingMarkers = false;
     }
     
     _adjustCamera(trucksData.values.toList());
