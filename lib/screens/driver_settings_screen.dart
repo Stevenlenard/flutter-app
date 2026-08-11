@@ -685,8 +685,9 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
           decoration: _inputDecoration("Brief Description"),
         ),
       ], "Submit Report", () async {
-        if (descCtrl.text.isEmpty) {
-          CustomNotification.showTopNotification(context, "Description is required");
+        final description = descCtrl.text.trim();
+        if (description.isEmpty) {
+          CustomNotification.showTopNotification(context, "Please complete all required fields.");
           return;
         }
 
@@ -699,20 +700,23 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
             'driverName': _user?.name,
             'truckId': truckId,
             'issueType': issueType,
-            'description': descCtrl.text,
+            'description': description,
             'urgency': urgency,
             'latitude': pos.latitude,
             'longitude': pos.longitude,
             'createdAt': ServerValue.timestamp,
-            'status': 'SUBMITTED',
+            'updatedAt': ServerValue.timestamp,
+            'status': 'PENDING', // Changed from SUBMITTED to PENDING
             'isReadByDriver': false,
             'isReadByAdmin': false,
           });
 
-          if (mounted) Navigator.pop(context);
-          CustomNotification.showTopNotification(context, "Truck issue submitted successfully.", false);
+          if (mounted) {
+            Navigator.pop(context);
+            CustomNotification.showTopNotification(context, "Truck issue reported successfully.", false);
+          }
         } catch (e) {
-          CustomNotification.showTopNotification(context, "Submission failed: $e");
+          CustomNotification.showTopNotification(context, "Submission failed. Please try again.");
         }
       });
     } finally {
@@ -746,34 +750,73 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> {
               separatorBuilder: (_, __) => const SizedBox(height: 10),
               itemBuilder: (context, i) {
                 final issue = issues[i];
-                String status = issue['status'] ?? "SUBMITTED";
-                Color statusColor = Colors.grey;
-                if (status == "UNDER_REVIEW") statusColor = Colors.orange;
-                if (status == "IN_PROGRESS") statusColor = Colors.blue;
+                String status = (issue['status'] ?? "PENDING").toString().toUpperCase().replaceAll('_', ' ');
+                Color statusColor = Colors.orange;
+                if (status == "IN PROGRESS") statusColor = Colors.blue;
                 if (status == "RESOLVED") statusColor = Colors.green;
                 if (status == "REJECTED") statusColor = Colors.red;
 
                 return Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(color: const Color(0xFFF7F8FA), borderRadius: BorderRadius.circular(16)),
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF7F8FA), 
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.grey.shade100)
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(issue['issueType'] ?? "Issue", style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14)),
-                          Text(status, style: TextStyle(color: statusColor, fontWeight: FontWeight.w900, fontSize: 10)),
+                          Text(
+                            (issue['issueType'] ?? "Issue").toString().toUpperCase(), 
+                            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: Colors.grey, letterSpacing: 1.1)
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(color: statusColor.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+                            child: Text(status, style: TextStyle(color: statusColor, fontWeight: FontWeight.w900, fontSize: 10)),
+                          ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Text(issue['description'] ?? "", style: const TextStyle(fontSize: 13, color: Colors.black87)),
-                      if (issue['adminResponse'] != null) ...[
-                        const SizedBox(height: 8),
+                      const SizedBox(height: 12),
+                      Text(
+                        issue['description'] ?? "", 
+                        style: const TextStyle(fontSize: 15, color: Color(0xFF2C3E50), fontWeight: FontWeight.w600)
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Icon(Icons.calendar_today, size: 12, color: Colors.grey.shade400),
+                          const SizedBox(width: 6),
+                          Text(
+                            DateFormat('MMM dd, yyyy').format(DateTime.fromMillisecondsSinceEpoch(issue['createdAt'] ?? 0)),
+                            style: TextStyle(fontSize: 11, color: Colors.grey.shade500, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                      if (issue['adminResponse'] != null && issue['adminResponse'].toString().isNotEmpty) ...[
+                        const SizedBox(height: 16),
                         Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
-                          child: Text("Admin: ${issue['adminResponse']}", style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white, 
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.grey.shade200)
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text("ADMIN RESPONSE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: Colors.grey, letterSpacing: 0.5)),
+                              const SizedBox(height: 6),
+                              Text(
+                                issue['adminResponse'], 
+                                style: const TextStyle(fontSize: 13, color: Colors.black87, fontWeight: FontWeight.w500, height: 1.4)
+                              ),
+                            ],
+                          ),
                         )
                       ],
                     ],
