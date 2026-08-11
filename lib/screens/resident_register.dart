@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../api/api_service.dart';
@@ -66,7 +68,6 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
         'phone': _phoneController.text.trim(),
         'purok': _selectedPurok,
         'complete_address': _addressController.text.trim(),
-        // Consent Metadata
         'termsAccepted': 1,
         'privacyPolicyAccepted': 1,
         'termsVersion': '1.0',
@@ -91,14 +92,9 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
         }
 
         if (!mounted) return;
-        
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(response.data['message'] ?? 'Registration successful! Please wait for admin approval.'),
-            duration: const Duration(seconds: 3),
-          ),
+          SnackBar(content: Text(response.data['message'] ?? 'Registration successful! Please wait for admin approval.')),
         );
-        
         Navigator.of(context).popUntil((route) => route.isFirst);
       } else {
         if (!mounted) return;
@@ -132,126 +128,72 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
                 child: SingleChildScrollView(
                   physics: const BouncingScrollPhysics(),
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(32),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withAlpha(235),
-                          borderRadius: BorderRadius.circular(40),
-                          border: Border.all(color: Colors.white.withAlpha(100), width: 1.5),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withAlpha(15),
-                              blurRadius: 30,
-                              offset: const Offset(0, 15),
-                              spreadRadius: -5,
-                            ),
-                          ],
-                        ),
-                        child: Form(
-                          key: _formKey,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _buildSectionHeader(Icons.lock_outline_rounded, 'Account Credentials'),
-                              const SizedBox(height: 8),
-                              _buildInput(_usernameController, 'Username', 'Enter your username', icon: Icons.person_outline_rounded),
-                              _buildInput(_emailController, 'Email Address', 'Enter your email', icon: Icons.email_outlined),
-                              _buildInput(_passwordController, 'Password', 'Create a password', isPass: true, obs: _obs1, onToggle: () => setState(() => _obs1 = !_obs1), icon: Icons.lock_outline_rounded),
-                              _buildInput(_confirmPasswordController, 'Confirm Password', 'Repeat your password', isPass: true, obs: _obs2, onToggle: () => setState(() => _obs2 = !_obs2), icon: Icons.lock_clock_outlined),
-
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 32),
-                                child: Divider(height: 1, color: Color(0x1F000000)),
-                              ),
-
-                              _buildSectionHeader(Icons.badge_outlined, 'Personal Details'),
-                              const SizedBox(height: 8),
-                              _buildInput(_fullNameController, 'Full Name', 'Enter your full name', icon: Icons.face_outlined),
-                              _buildInput(_phoneController, 'Contact Number', 'Enter your phone number', icon: Icons.phone_android_outlined),
-                              _buildPurokDropdown(),
-                              _buildInput(_addressController, 'Complete Address', 'Enter your home address', maxLines: 3, action: TextInputAction.done, icon: Icons.home_outlined),
-
-                              const SizedBox(height: 32),
-                              _buildTermsCheckbox(),
-
-                              const SizedBox(height: 32),
-
-                              _buildSubmitButton(),
-
-                              const SizedBox(height: 16),
-                              Center(
-                                child: TextButton(
-                                  onPressed: () => Navigator.pop(context),
-                                  child: const Text(
-                                    "Back to Login",
-                                    style: TextStyle(
-                                      color: AppColors.textGray,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 48),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Column(
-                          children: [
-                            Wrap(
-                              alignment: WrapAlignment.center,
-                              spacing: 12,
-                              children: [
-                                GestureDetector(
-                                  onTap: () => LegalAgreementDialog.show(context, isTerms: true),
-                                  child: const Text(
-                                    'Terms & Conditions',
-                                    style: TextStyle(
-                                      color: AppColors.tealLink,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      decoration: TextDecoration.underline,
-                                    ),
-                                  ),
-                                ),
-                                const Text('•', style: TextStyle(color: AppColors.textGray)),
-                                GestureDetector(
-                                  onTap: () => LegalAgreementDialog.show(context, isTerms: false),
-                                  child: const Text(
-                                    'Privacy Policy',
-                                    style: TextStyle(
-                                      color: AppColors.tealLink,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      decoration: TextDecoration.underline,
-                                    ),
-                                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 600),
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(32),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withAlpha(235),
+                              borderRadius: BorderRadius.circular(40),
+                              border: Border.all(color: Colors.white.withAlpha(100), width: 1.5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withAlpha(15),
+                                  blurRadius: 30,
+                                  offset: const Offset(0, 15),
+                                  spreadRadius: -5,
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 12),
-                            const Text(
-                              '© 2026 Brgy. Balintawak Lipa City',
-                              style: TextStyle(
-                                color: Color(0xFF00796B),
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                            child: Form(
+                              key: _formKey,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildSectionHeader(Icons.lock_outline_rounded, 'Account Credentials'),
+                                  const SizedBox(height: 8),
+                                  _buildInput(_usernameController, 'Username', 'Enter your username', icon: Icons.person_outline_rounded),
+                                  _buildInput(_emailController, 'Email Address', 'Enter your email', icon: Icons.email_outlined),
+                                  _buildInput(_passwordController, 'Password', 'Create a password', isPass: true, obs: _obs1, onToggle: () => setState(() => _obs1 = !_obs1), icon: Icons.lock_outline_rounded),
+                                  _buildInput(_confirmPasswordController, 'Confirm Password', 'Repeat your password', isPass: true, obs: _obs2, onToggle: () => setState(() => _obs2 = !_obs2), icon: Icons.lock_clock_outlined),
+
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 32),
+                                    child: Divider(height: 1, color: Color(0x1F000000)),
+                                  ),
+
+                                  _buildSectionHeader(Icons.badge_outlined, 'Personal Details'),
+                                  const SizedBox(height: 8),
+                                  _buildInput(_fullNameController, 'Full Name', 'Enter your full name', icon: Icons.face_outlined),
+                                  _buildInput(_phoneController, 'Contact Number', 'Enter your phone number', icon: Icons.phone_android_outlined),
+                                  _buildPurokDropdown(),
+                                  _buildInput(_addressController, 'Complete Address', 'Enter your home address', maxLines: 3, action: TextInputAction.done, icon: Icons.home_outlined),
+
+                                  const SizedBox(height: 32),
+                                  _buildTermsCheckbox(),
+                                  const SizedBox(height: 32),
+                                  _buildSubmitButton(),
+
+                                  const SizedBox(height: 16),
+                                  Center(
+                                    child: TextButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      child: const Text("Back to Login", style: TextStyle(color: AppColors.textGray, fontWeight: FontWeight.bold, fontSize: 15)),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const Text(
-                              'All rights reserved',
-                              style: TextStyle(color: Color(0xFF00796B), fontSize: 11),
-                            ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(height: 48),
+                          _buildFooter(),
+                          const SizedBox(height: 24),
+                        ],
                       ),
-                      const SizedBox(height: 24),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -262,12 +204,36 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
     );
   }
 
+  Widget _buildFooter() {
+    return Column(
+      children: [
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 12,
+          children: [
+            GestureDetector(
+              onTap: () => LegalAgreementDialog.show(context, isTerms: true),
+              child: const Text('Terms & Conditions', style: TextStyle(color: AppColors.tealLink, fontSize: 12, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
+            ),
+            const Text('•', style: TextStyle(color: AppColors.textGray)),
+            GestureDetector(
+              onTap: () => LegalAgreementDialog.show(context, isTerms: false),
+              child: const Text('Privacy Policy', style: TextStyle(color: AppColors.tealLink, fontSize: 12, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        const Text('© 2026 Brgy. Balintawak Lipa City', style: TextStyle(color: Color(0xFF00796B), fontSize: 13, fontWeight: FontWeight.bold)),
+        const Text('All rights reserved', style: TextStyle(color: Color(0xFF00796B), fontSize: 11)),
+      ],
+    );
+  }
+
   Widget _buildTermsCheckbox() {
     return Row(
       children: [
         SizedBox(
-          height: 24,
-          width: 24,
+          height: 24, width: 24,
           child: Checkbox(
             value: _termsAccepted,
             onChanged: (v) => setState(() => _termsAccepted = v ?? false),
@@ -279,27 +245,15 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
         Expanded(
           child: Wrap(
             children: [
-              const Text(
-                'I have read and agree to the ',
-                style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500),
-              ),
+              const Text('I have read and agree to the ', style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500)),
               GestureDetector(
                 onTap: () => LegalAgreementDialog.show(context, isTerms: true),
-                child: const Text(
-                  'Terms & Conditions',
-                  style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
-                ),
+                child: const Text('Terms & Conditions', style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
               ),
-              const Text(
-                ' and ',
-                style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500),
-              ),
+              const Text(' and ', style: TextStyle(fontSize: 13, color: AppColors.textGray, fontWeight: FontWeight.w500)),
               GestureDetector(
                 onTap: () => LegalAgreementDialog.show(context, isTerms: false),
-                child: const Text(
-                  'Privacy Policy',
-                  style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline),
-                ),
+                child: const Text('Privacy Policy', style: TextStyle(fontSize: 13, color: AppColors.tealLink, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
               ),
             ],
           ),
@@ -314,10 +268,7 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
       child: Row(
         children: [
           Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withAlpha(150),
-              borderRadius: BorderRadius.circular(12),
-            ),
+            decoration: BoxDecoration(color: Colors.white.withAlpha(150), borderRadius: BorderRadius.circular(12)),
             child: IconButton(
               icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF00796B), size: 20),
               onPressed: () => Navigator.pop(context),
@@ -327,37 +278,16 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
           const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Resident',
-                style: TextStyle(
-                  color: AppColors.tealText,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -1,
-                  height: 1,
-                ),
-              ),
-              Text(
-                'Registration Form',
-                style: TextStyle(
-                  color: AppColors.textGray,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.5,
-                ),
-              ),
+              Text('Resident', style: TextStyle(color: AppColors.tealText, fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: -1, height: 1)),
+              Text('Registration Form', style: TextStyle(color: AppColors.textGray, fontSize: 14, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
             ],
           ),
           const Spacer(),
           Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppColors.tealText.withAlpha(30),
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: AppColors.tealText.withAlpha(30), shape: BoxShape.circle),
             child: const Icon(Icons.home_work_rounded, color: AppColors.tealText, size: 28),
           ),
-          const SizedBox(width: 8),
         ],
       ),
     );
@@ -368,89 +298,30 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
       children: [
         Icon(icon, color: AppColors.tealText, size: 22),
         const SizedBox(width: 12),
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.tealText,
-            fontSize: 18,
-            fontWeight: FontWeight.w900,
-            letterSpacing: -0.5,
-          ),
-        ),
+        Text(title, style: const TextStyle(color: AppColors.tealText, fontSize: 18, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
       ],
     );
   }
 
-  Widget _buildInput(
-    TextEditingController ctrl,
-    String label,
-    String hint, {
-    IconData? icon,
-    bool isPass = false,
-    bool obs = false,
-    VoidCallback? onToggle,
-    int maxLines = 1,
-    TextInputAction action = TextInputAction.next,
-  }) {
+  Widget _buildInput(TextEditingController ctrl, String label, String hint, {IconData? icon, bool isPass = false, bool obs = false, VoidCallback? onToggle, int maxLines = 1, TextInputAction action = TextInputAction.next}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 24, left: 4, bottom: 8),
-          child: Text(
-            label,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w800,
-              color: AppColors.inputLabel,
-              letterSpacing: 0.2,
-            ),
-          ),
-        ),
+        Padding(padding: const EdgeInsets.only(top: 24, left: 4, bottom: 8), child: Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.inputLabel, letterSpacing: 0.2))),
         TextFormField(
-          controller: ctrl,
-          obscureText: obs,
-          maxLines: maxLines,
-          textInputAction: action,
+          controller: ctrl, obscureText: obs, maxLines: maxLines, textInputAction: action,
           style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.inputLabel),
           onFieldSubmitted: (_) { if(action == TextInputAction.done) _handleRegister(); },
-          validator: (value) {
-            if (value == null || value.isEmpty) return 'Required';
-            return null;
-          },
+          validator: (value) => (value == null || value.isEmpty) ? 'Required' : null,
           decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 15, fontWeight: FontWeight.w400),
+            hintText: hint, hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 15, fontWeight: FontWeight.w400),
             prefixIcon: icon != null ? Icon(icon, color: const Color(0xB400796B), size: 20) : null,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-            filled: true,
-            fillColor: Colors.grey.shade50,
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
-              borderSide: BorderSide(color: Colors.grey.shade200, width: 1.5),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: AppColors.tealText, width: 2),
-            ),
-            errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: Colors.redAccent, width: 1.5),
-            ),
-            focusedErrorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: Colors.redAccent, width: 2),
-            ),
-            suffixIcon: isPass
-              ? IconButton(
-                  icon: Icon(
-                    obs ? Icons.visibility_off_rounded : Icons.visibility_rounded,
-                    color: Colors.grey.shade500,
-                    size: 20,
-                  ),
-                  onPressed: onToggle
-                )
-              : null,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18), filled: true, fillColor: Colors.grey.shade50,
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Colors.grey.shade200, width: 1.5)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.tealText, width: 2)),
+            errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Colors.redAccent, width: 1.5)),
+            focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Colors.redAccent, width: 2)),
+            suffixIcon: isPass ? IconButton(icon: Icon(obs ? Icons.visibility_off_rounded : Icons.visibility_rounded, color: Colors.grey.shade500, size: 20), onPressed: onToggle) : null,
           ),
         ),
       ],
@@ -461,48 +332,23 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(top: 24, left: 4, bottom: 8),
-          child: Text(
-            'Purok',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w800,
-              color: AppColors.inputLabel,
-            ),
-          ),
-        ),
+        const Padding(padding: EdgeInsets.only(top: 24, left: 4, bottom: 8), child: Text('Purok', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.inputLabel))),
         Container(
           width: double.infinity,
-          decoration: BoxDecoration(
-            color: Colors.grey.shade50,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade200, width: 1.5),
-          ),
+          decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade200, width: 1.5)),
           child: DropdownButtonHideUnderline(
             child: DropdownButtonFormField<String>(
-              value: _selectedPurok,
-              validator: (value) => value == null ? 'Please select a Purok' : null,
+              value: _selectedPurok, validator: (value) => value == null ? 'Please select a Purok' : null,
               hint: const Text('Select your location', style: TextStyle(color: Color(0xFFBDBDBD), fontSize: 15, fontWeight: FontWeight.w400)),
               isExpanded: true,
-              icon: const Padding(
-                padding: EdgeInsets.only(right: 12),
-                child: Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.tealText, size: 24),
-              ),
+              icon: const Padding(padding: EdgeInsets.only(right: 12), child: Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.tealText, size: 24)),
               decoration: InputDecoration(
                 prefixIcon: const Icon(Icons.location_on_outlined, color: Color(0xB400796B), size: 20),
-                contentPadding: const EdgeInsets.symmetric(vertical: 18),
-                border: InputBorder.none,
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: AppColors.tealText, width: 2),
-                ),
+                contentPadding: const EdgeInsets.symmetric(vertical: 18), border: InputBorder.none,
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.tealText, width: 2)),
                 errorStyle: const TextStyle(height: 0),
               ),
-              items: _puroks.map((p) => DropdownMenuItem(
-                value: p,
-                child: Text(p, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.inputLabel))
-              )).toList(),
+              items: _puroks.map((p) => DropdownMenuItem(value: p, child: Text(p, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.inputLabel)))).toList(),
               onChanged: (v) => setState(() => _selectedPurok = v),
             ),
           ),
@@ -520,24 +366,8 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
         child: Ink(
           decoration: AppDecorations.loginButton,
           child: Container(
-            width: double.infinity,
-            height: 64,
-            alignment: Alignment.center,
-            child: _isLoading
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
-                  )
-                : const Text(
-                    'Submit Registration',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 1,
-                    ),
-                  ),
+            width: double.infinity, height: 64, alignment: Alignment.center,
+            child: _isLoading ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5)) : const Text('Submit Registration', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900, letterSpacing: 1)),
           ),
         ),
       ),

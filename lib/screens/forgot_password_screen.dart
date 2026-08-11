@@ -50,7 +50,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                         _buildSubtitle(),
                         const SizedBox(height: 48),
 
-                        _buildMainCard(),
+                        Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 500),
+                            child: _buildMainCard(),
+                          ),
+                        ),
 
                         const Spacer(flex: 2),
                         _buildFooter(),

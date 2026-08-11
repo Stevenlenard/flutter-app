@@ -137,22 +137,25 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F5F5),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFEEEEEE)),
-        ),
-        child: TextField(
-          controller: _searchController,
-          onChanged: (value) => setState(() => _searchQuery = value),
-          decoration: const InputDecoration(
-            hintText: "Search name, email, or username...",
-            hintStyle: TextStyle(color: Color(0xFFBDBDBD), fontSize: 14),
-            prefixIcon: Icon(Icons.search_rounded, color: Color(0xFFBDBDBD), size: 22),
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.symmetric(vertical: 16),
+      child: Center(
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 800),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF5F5F5),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFEEEEEE)),
+          ),
+          child: TextField(
+            controller: _searchController,
+            onChanged: (value) => setState(() => _searchQuery = value),
+            decoration: const InputDecoration(
+              hintText: "Search name, email, or username...",
+              hintStyle: TextStyle(color: Color(0xFFBDBDBD), fontSize: 14),
+              prefixIcon: Icon(Icons.search_rounded, color: Color(0xFFBDBDBD), size: 22),
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(vertical: 16),
+            ),
           ),
         ),
       ),
@@ -162,19 +165,24 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
   Widget _buildTabBar() {
     return Container(
       color: Colors.white,
-      child: TabBar(
-        controller: _tabController,
-        tabs: const [
-          Tab(text: "Residents"),
-          Tab(text: "Drivers"),
-          Tab(text: "Admins"),
-        ],
-        labelColor: const Color(0xFF00BFA5),
-        unselectedLabelColor: const Color(0xFF757575),
-        indicatorColor: const Color(0xFF00BFA5),
-        indicatorWeight: 3,
-        labelStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
-        unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+      child: Center(
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: TabBar(
+            controller: _tabController,
+            tabs: const [
+              Tab(text: "Residents"),
+              Tab(text: "Drivers"),
+              Tab(text: "Admins"),
+            ],
+            labelColor: const Color(0xFF00BFA5),
+            unselectedLabelColor: const Color(0xFF757575),
+            indicatorColor: const Color(0xFF00BFA5),
+            indicatorWeight: 3,
+            labelStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
+            unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+          ),
+        ),
       ),
     );
   }
@@ -187,78 +195,83 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
       color: const Color(0xFF00BFA5),
       child: filteredUsers.isEmpty
           ? _buildEmptyState()
-          : ListView.builder(
-              itemCount: filteredUsers.length,
-              padding: const EdgeInsets.all(20),
-              physics: const AlwaysScrollableScrollPhysics(),
-              itemBuilder: (context, index) {
-                final user = filteredUsers[index];
-                final String displayRole = user['role'].toString().toUpperCase();
-                final bool isPending = (user['is_archived'] == 1 || user['is_archived'] == true);
+          : Center(
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 800),
+                child: ListView.builder(
+                  itemCount: filteredUsers.length,
+                  padding: const EdgeInsets.all(20),
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  itemBuilder: (context, index) {
+                    final user = filteredUsers[index];
+                    final String displayRole = user['role'].toString().toUpperCase();
+                    final bool isPending = (user['is_archived'] == 1 || user['is_archived'] == true);
 
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withAlpha(6),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      )
-                    ],
-                  ),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                    leading: Container(
-                      width: 52,
-                      height: 52,
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
                       decoration: BoxDecoration(
-                        color: _getRoleBgColor(displayRole),
-                        borderRadius: BorderRadius.circular(16),
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha(6),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          )
+                        ],
                       ),
-                      child: Icon(
-                        Icons.person_rounded,
-                        color: _getRoleColor(displayRole),
-                        size: 26,
-                      ),
-                    ),
-                    title: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            user['name'] ?? "No Name",
-                            style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF1A1A1A), fontSize: 16),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                        leading: Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: _getRoleBgColor(displayRole),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Icon(
+                            Icons.person_rounded,
+                            color: _getRoleColor(displayRole),
+                            size: 26,
                           ),
                         ),
-                        if (isPending)
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFFFF3E0),
-                              borderRadius: BorderRadius.circular(8),
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                user['name'] ?? "No Name",
+                                style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF1A1A1A), fontSize: 16),
+                              ),
                             ),
-                            child: const Text(
-                              "PENDING",
-                              style: TextStyle(color: Color(0xFFE65100), fontSize: 9, fontWeight: FontWeight.w900),
-                            ),
+                            if (isPending)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF3E0),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Text(
+                                  "PENDING",
+                                  style: TextStyle(color: Color(0xFFE65100), fontSize: 9, fontWeight: FontWeight.w900),
+                                ),
+                              ),
+                          ],
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            "${user['email'] ?? 'No Email'}\n${user['username'] ?? ''}",
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF757575), height: 1.3),
                           ),
-                      ],
-                    ),
-                    subtitle: Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        "${user['email'] ?? 'No Email'}\n${user['username'] ?? ''}",
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF757575), height: 1.3),
+                        ),
+                        trailing: const Icon(Icons.info_outline_rounded, color: Color(0xFFD1D1D1)),
+                        isThreeLine: true,
+                        onTap: () => _showUserDetails(user),
                       ),
-                    ),
-                    trailing: const Icon(Icons.info_outline_rounded, color: Color(0xFFD1D1D1)),
-                    isThreeLine: true,
-                    onTap: () => _showUserDetails(user),
-                  ),
-                );
-              },
+                    );
+                  },
+                ),
+              ),
             ),
     );
   }

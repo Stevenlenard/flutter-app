@@ -84,35 +84,43 @@ class _ResidentComplaintsScreenState extends State<ResidentComplaintsScreen> {
                 child: Column(
                   children: [
                     // 📊 BALANCED SUMMARY CARDS
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
-                      child: Row(
-                        children: [
-                          _buildSummaryCard("Pending", pending.toString(), const Color(0xFFE0F2F1), const Color(0xFF00796B), Icons.hourglass_empty_rounded),
-                          const SizedBox(width: 10),
-                          _buildSummaryCard("Active", inProgress.toString(), const Color(0xFFE3F2FD), const Color(0xFF1976D2), Icons.bolt_rounded),
-                          const SizedBox(width: 10),
-                          _buildSummaryCard("Solved", resolved.toString(), const Color(0xFFE8F5E9), const Color(0xFF2E7D32), Icons.verified_rounded),
-                        ],
-                      ),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        bool isSmall = constraints.maxWidth < 360;
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+                          child: Row(
+                            children: [
+                              _buildSummaryCard("Pending", pending.toString(), const Color(0xFFE0F2F1), const Color(0xFF00796B), Icons.hourglass_empty_rounded, isSmall),
+                              const SizedBox(width: 10),
+                              _buildSummaryCard("Active", inProgress.toString(), const Color(0xFFE3F2FD), const Color(0xFF1976D2), Icons.bolt_rounded, isSmall),
+                              const SizedBox(width: 10),
+                              _buildSummaryCard("Solved", resolved.toString(), const Color(0xFFE8F5E9), const Color(0xFF2E7D32), Icons.verified_rounded, isSmall),
+                            ],
+                          ),
+                        );
+                      }
                     ),
 
                     // ➕ PRO ACTION BUTTON
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: ElevatedButton.icon(
-                        onPressed: () async {
-                          await Navigator.pushNamed(context, '/file_complaint');
-                          _fetchComplaints(); // Refresh from database after returning
-                        },
-                        icon: const Icon(Icons.add_rounded, color: Colors.white),
-                        label: const Text("New Complaint", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF00897B),
-                          minimumSize: const Size(double.infinity, 64),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                          elevation: 8,
-                          shadowColor: const Color(0xFF00897B).withAlpha(100),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 800),
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            await Navigator.pushNamed(context, '/file_complaint');
+                            _fetchComplaints(); // Refresh from database after returning
+                          },
+                          icon: const Icon(Icons.add_rounded, color: Colors.white),
+                          label: const Text("New Complaint", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00897B),
+                            minimumSize: const Size(double.infinity, 64),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                            elevation: 8,
+                            shadowColor: const Color(0xFF00897B).withAlpha(100),
+                          ),
                         ),
                       ),
                     ),
@@ -125,7 +133,10 @@ class _ResidentComplaintsScreenState extends State<ResidentComplaintsScreen> {
                     else
                       Padding(
                         padding: const EdgeInsets.all(16.0),
-                        child: Column(children: _complaints.map((c) => _buildOrganizedComplaintItem(c)).toList()),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 800),
+                          child: Column(children: _complaints.map((c) => _buildOrganizedComplaintItem(c)).toList()),
+                        ),
                       ),
                   ],
                 ),
@@ -137,18 +148,18 @@ class _ResidentComplaintsScreenState extends State<ResidentComplaintsScreen> {
     );
   }
 
-  Widget _buildSummaryCard(String label, String count, Color bgColor, Color textColor, IconData icon) {
+  Widget _buildSummaryCard(String label, String count, Color bgColor, Color textColor, IconData icon, bool isSmall) {
     return Expanded(
       child: Container(
-        height: 110,
+        height: isSmall ? 90 : 110,
         decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 10, offset: const Offset(0, 4))]),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: textColor, size: 24),
+            Icon(icon, color: textColor, size: isSmall ? 18 : 24),
             const SizedBox(height: 6),
-            Text(count, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: textColor, letterSpacing: -1)),
-            Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: textColor, letterSpacing: 0.5)),
+            Text(count, style: TextStyle(fontSize: isSmall ? 22 : 28, fontWeight: FontWeight.w900, color: textColor, letterSpacing: -1)),
+            Text(label, style: TextStyle(fontSize: isSmall ? 9 : 11, fontWeight: FontWeight.w800, color: textColor, letterSpacing: 0.5)),
           ],
         ),
       ),
