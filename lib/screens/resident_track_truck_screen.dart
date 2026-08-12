@@ -21,17 +21,17 @@ class ResidentTrackTruckScreen extends StatefulWidget {
 class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   final FirebaseDatabase _database = FirebaseDatabase.instance;
   MapboxMap? mapboxMap;
+  PointAnnotationManager? _pointAnnotationManager;
   List<Map<dynamic, dynamic>> _trucks = [];
   final Set<String> _comparingTrucks = {};
   geo.Position? _residentPosition;
   
-  PolylineAnnotationManager? _polylineAnnotationManager;
   final Map<String, StreamSubscription> _routeSubscriptions = {};
+  final Map<String, Position?> _sessionStartPoints = {}; 
 
   bool _managersReady = false;
   bool _truckLayersCreated = false;
   
-  // Barangay Balintawak center coordinate
   final Position _balintawakCenter = Position(121.1623, 13.9413);
 
   @override
@@ -79,15 +79,11 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
           final String rawTruckId = (val['truck_id'] ?? key.toString());
           final String truckId = rawTruckId.toUpperCase().trim();
 
-          // ONLY SHOW TRUCKS THAT ARE ONLINE AND ACTIVE
-          // AND updated within the last 5 minutes (stale data prevention)
           bool isFresh = true;
           if (val['lastSeen'] != null) {
             final int lastSeen = (val['lastSeen'] as int);
             final int now = DateTime.now().millisecondsSinceEpoch;
-            if (now - lastSeen > 300000) { // 5 minutes timeout
-              isFresh = false;
-            }
+            if (now - lastSeen > 300000) isFresh = false;
           }
 
           if (isOnline && isFresh && (status == 'ACTIVE' || status == 'COLLECTING' || status == 'IDLE' || status == 'FULL')) {
@@ -97,7 +93,6 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
               final existing = uniqueTrucks[truckId]!;
               final existingTime = DateTime.tryParse(existing['updatedAt'] ?? '') ?? DateTime(2000);
               final newTime = DateTime.tryParse(val['updatedAt'] ?? '') ?? DateTime(2000);
-              
               if (newTime.isAfter(existingTime.add(const Duration(seconds: 1)))) {
                 uniqueTrucks[truckId] = {...val, 'id': key.toString(), 'truck_id': truckId};
               }
@@ -108,18 +103,27 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
         final List<Map<dynamic, dynamic>> list = uniqueTrucks.values.toList();
 
         if (mounted) {
-          debugPrint("RESIDENT TRACK DEBUG: Found ${list.length} active trucks");
-          for (var t in list) {
-            debugPrint("[RESIDENT LISTENER] truckId = ${t['truck_id']}, lat = ${t['latitude']}, lng = ${t['longitude']}, status = ${t['status']}");
-          }
           setState(() => _trucks = list);
           _updateTruckMarkers();
           
+          final activeTruckIds = list.map((t) => t['truck_id'] as String).toSet();
+          final trucksToClear = _routeSubscriptions.keys.where((id) => !activeTruckIds.contains(id)).toList();
+          
+          for (var id in trucksToClear) {
+            _routeSubscriptions[id]?.cancel();
+            _routeSubscriptions.remove(id);
+            _clearTruckRoute(id);
+          }
+
           for (var t in list) {
             final String tid = t['truck_id'];
             final String? sid = t['current_session'];
-            if (sid != null && !_routeSubscriptions.containsKey(tid)) {
-              _setupRouteSubscription(tid, sid);
+            if (sid != null) {
+              if (!_routeSubscriptions.containsKey(tid)) _setupRouteSubscription(tid, sid);
+            } else {
+              _routeSubscriptions[tid]?.cancel();
+              _routeSubscriptions.remove(tid);
+              _clearTruckRoute(tid);
             }
           }
         }
@@ -136,105 +140,149 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
         final Map data = event.snapshot.value as Map;
         final List<Map> points = [];
         data.forEach((key, value) => points.add(value as Map));
-        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
-        _updateRoutePolyline(points);
+        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
+        _updateRoutePolyline(truckId, points);
+      }
+    });
+
+    _database.ref('driver_routes/$sessionId').onValue.listen((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final Map data = event.snapshot.value as Map;
+        if (data['start_lat'] != null && data['start_lng'] != null) {
+          if (mounted) {
+            setState(() => _sessionStartPoints[truckId] = Position(data['start_lng'], data['start_lat']));
+            _updateTruckMarkers();
+          }
+        }
       }
     });
   }
 
-  void _updateRoutePolyline(List<Map> points) async {
-    if (_polylineAnnotationManager == null || points.length < 2) return;
-    _polylineAnnotationManager?.deleteAll();
-    List<Position> currentSegment = [];
+  void _clearTruckRoute(String truckId) async {
+     if (mapboxMap == null) return;
+     try {
+       final style = mapboxMap!.style;
+       final String sourceId = "route-source-$truckId";
+       if (await style.styleSourceExists(sourceId)) {
+         await style.setStyleSourceProperty(sourceId, "data", jsonEncode({"type": "FeatureCollection", "features": []}));
+       }
+     } catch (_) {}
+     if (mounted) {
+       setState(() => _sessionStartPoints.remove(truckId));
+       _updateTruckMarkers();
+     }
+  }
+
+  void _updateRoutePolyline(String truckId, List<Map> points) async {
+    if (mapboxMap == null || points.length < 2) return;
+    final String sourceId = "route-source-$truckId";
+    final List<Map<String, dynamic>> segments = [];
+    List<List<double>> currentSegmentCoords = [];
     String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
     int lastTimestamp = (points.first['timestamp'] ?? 0) as int;
 
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
       final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
-      final pos = Position((p['lng'] ?? 0.0).toDouble(), (p['lat'] ?? 0.0).toDouble());
+      final lng = (p['lng'] ?? 0.0).toDouble();
+      final lat = (p['lat'] ?? 0.0).toDouble();
       final timestamp = (p['timestamp'] ?? 0) as int;
-
       bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
 
-      if (isGap) {
-        if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
-        if (currentSegment.isNotEmpty) {
-          _drawSegment([currentSegment.last, pos], "YELLOW", isDashed: true);
+      if (isGap || color != currentColor) {
+        if (currentSegmentCoords.length >= 2) {
+          segments.add({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)},
+            "properties": {"color": currentColor, "isGap": false}
+          });
         }
-        currentSegment = [pos];
-        currentColor = color;
-      } else if (color != currentColor) {
-        if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
-        currentSegment = [currentSegment.isNotEmpty ? currentSegment.last : pos, pos];
+        if (isGap && currentSegmentCoords.isNotEmpty) {
+           segments.add({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [currentSegmentCoords.last, [lng, lat]]},
+            "properties": {"color": "YELLOW", "isGap": true}
+          });
+        }
+        currentSegmentCoords = [[lng, lat]];
         currentColor = color;
       } else {
-        currentSegment.add(pos);
+        currentSegmentCoords.add([lng, lat]);
       }
       lastTimestamp = timestamp;
     }
-    if (currentSegment.length >= 2) _drawSegment(currentSegment, currentColor);
-  }
+    if (currentSegmentCoords.length >= 2) {
+      segments.add({
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": currentSegmentCoords},
+        "properties": {"color": currentColor, "isGap": false}
+      });
+    }
 
-  void _drawSegment(List<Position> segment, String colorName, {bool isDashed = false}) {
-    Color color = Colors.green;
-    if (colorName == "YELLOW") color = Colors.yellow;
-    if (colorName == "MAGENTA") color = Colors.pinkAccent;
-    if (colorName == "GRAY") color = Colors.grey;
-    if (colorName == "BLUE") color = Colors.blue;
+    final featureCollection = {"type": "FeatureCollection", "features": segments};
 
-    _polylineAnnotationManager?.create(PolylineAnnotationOptions(
-      geometry: LineString(coordinates: segment),
-      lineColor: color.toARGB32(),
-      lineWidth: isDashed ? 3.0 : 8.0,
-      lineOpacity: isDashed ? 0.5 : 0.8,
-      lineJoin: LineJoin.ROUND,
-    ));
+    try {
+      final style = mapboxMap!.style;
+      if (!(await style.styleSourceExists(sourceId))) {
+        await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
+        await style.addLayer(LineLayer(
+          id: "route-layer-$truckId",
+          sourceId: sourceId,
+          lineColor: Colors.green.toARGB32(),
+          lineWidth: 6.0,
+          lineOpacity: 0.7,
+          lineCap: LineCap.ROUND,
+          lineJoin: LineJoin.ROUND,
+        ));
+        
+        await style.setStyleLayerProperty("route-layer-$truckId", "line-color", [
+          "match", ["get", "color"],
+          "YELLOW", Colors.yellow.toARGB32(),
+          "MAGENTA", Colors.pinkAccent.toARGB32(),
+          "GRAY", Colors.grey.toARGB32(),
+          "BLUE", Colors.blue.toARGB32(),
+          Colors.green.toARGB32()
+        ]);
+        await style.addLayer(LineLayer(
+          id: "route-gap-layer-$truckId",
+          sourceId: sourceId,
+          filter: ["==", ["get", "isGap"], true],
+          lineColor: Colors.yellow.toARGB32(),
+          lineWidth: 2.0,
+          lineOpacity: 0.5,
+          lineDasharray: [2.0, 2.0],
+        ));
+      } else {
+        await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
+      }
+    } catch (e) {
+      debugPrint("[RESIDENT MAP] Route Error: $e");
+    }
   }
 
   void _recenterToBalintawak() {
-    mapboxMap?.setCamera(CameraOptions(
-      center: Point(coordinates: _balintawakCenter),
-      zoom: 14.5,
-    ));
+    mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: _balintawakCenter), zoom: 14.5));
   }
 
   void _recenterToResident() {
     if (_residentPosition == null) return;
-    mapboxMap?.setCamera(CameraOptions(
-      center: Point(coordinates: Position(_residentPosition!.longitude, _residentPosition!.latitude)),
-      zoom: 16.5,
-    ));
+    mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(_residentPosition!.longitude, _residentPosition!.latitude)), zoom: 16.5));
   }
 
   void _focusOnTruck(Map<dynamic, dynamic> truck) {
     final double lat = (truck['latitude'] ?? 0.0).toDouble();
     final double lng = (truck['longitude'] ?? 0.0).toDouble();
     if (lat == 0 || lng == 0) return;
-    mapboxMap?.setCamera(CameraOptions(
-      center: Point(coordinates: Position(lng, lat)),
-      zoom: 17.5,
-    ));
+    mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat)), zoom: 17.5));
   }
 
-  void _onMapCreated(MapboxMap map) {
-    mapboxMap = map;
-  }
+  void _onMapCreated(MapboxMap map) { mapboxMap = map; }
 
   void _onStyleLoaded(dynamic data) async {
-    // 1. DISABLE NATIVE BLUE PUCK (We will use a custom one for better layering)
-    mapboxMap?.location.updateSettings(LocationComponentSettings(
-      enabled: false,
-      pulsingEnabled: false,
-    ));
-    
-    _polylineAnnotationManager = await mapboxMap?.annotations.createPolylineAnnotationManager();
-    
+    mapboxMap?.location.updateSettings(LocationComponentSettings(enabled: false, pulsingEnabled: false));
+    _pointAnnotationManager = await mapboxMap!.annotations.createPointAnnotationManager();
     if (mounted) setState(() => _managersReady = true);
-    
     _updateTruckMarkers();
-    
-    // Default startup behavior: focus Balintawak
     _recenterToBalintawak();
   }
 
@@ -243,7 +291,6 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   void _updateTruckMarkers() async {
     if (mapboxMap == null || _isUpdatingMarkers) return;
     _isUpdatingMarkers = true;
-    
     final String sourceId = "trucks-live-location-source";
     final String circleLayerId = "trucks-live-location-circle";
     final String labelLayerId = "trucks-live-location-label";
@@ -254,180 +301,83 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
       final double lat = (truck['latitude'] ?? 0.0).toDouble();
       final double lng = (truck['longitude'] ?? 0.0).toDouble();
       final String tid = truck['truck_id'].toString();
-      final String status = (truck['status'] ?? 'IDLE').toString().toUpperCase();
-      
       return {
         "type": "Feature",
-        "geometry": {
-          "type": "Point",
-          "coordinates": [lng, lat]
-        },
-        "properties": {
-          "truckId": tid,
-          "status": status,
-          "label": "DRIVER\n$tid"
-        }
+        "geometry": {"type": "Point", "coordinates": [lng, lat]},
+        "properties": {"type": "TRUCK", "truckId": tid, "label": "DRIVER\n$tid"}
       };
     }).toList();
 
-    final featureCollection = {
-      "type": "FeatureCollection",
-      "features": features
-    };
+    for (var entry in _sessionStartPoints.entries) {
+      if (entry.value != null) {
+        features.add({
+          "type": "Feature",
+          "geometry": {"type": "Point", "coordinates": [entry.value!.lng, entry.value!.lat]},
+          "properties": {"type": "SESSION_START", "label": "START / ${entry.key}"}
+        });
+      }
+    }
 
-    // 2. Resident "YOU" label
     final residentFeature = _residentPosition == null ? null : {
       "type": "Feature",
-      "geometry": {
-        "type": "Point",
-        "coordinates": [_residentPosition!.longitude, _residentPosition!.latitude]
-      },
-      "properties": {
-        "label": "YOU / RESIDENT"
-      }
+      "geometry": {"type": "Point", "coordinates": [_residentPosition!.longitude, _residentPosition!.latitude]},
+      "properties": {"label": "YOU / RESIDENT"}
     };
 
     try {
       final style = mapboxMap!.style;
-      bool layersExist = await style.styleLayerExists(circleLayerId) && 
-                         await style.styleLayerExists(labelLayerId);
-
+      bool layersExist = await style.styleLayerExists(circleLayerId);
       if (!_truckLayersCreated || !layersExist) {
-        debugPrint("[RESIDENT MAP] Creating Source and Layers...");
-        
-        // Clean up previous attempts
         try { await style.removeStyleLayer(circleLayerId); } catch (_) {}
         try { await style.removeStyleLayer(labelLayerId); } catch (_) {}
         try { await style.removeStyleLayer("resident-marker-circle"); } catch (_) {}
         try { await style.removeStyleLayer("resident-marker-label"); } catch (_) {}
+        try { await style.removeStyleLayer("session-start-circle"); } catch (_) {}
+        try { await style.removeStyleLayer("session-start-label"); } catch (_) {}
         try { await style.removeStyleSource(sourceId); } catch (_) {}
         try { await style.removeStyleSource("resident-marker-source"); } catch (_) {}
 
-        // 1. CREATE TRUCK SOURCE
-        await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
+        await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode({"type": "FeatureCollection", "features": features})));
+        await style.addSource(GeoJsonSource(id: "resident-marker-source", data: jsonEncode({"type": "FeatureCollection", "features": residentFeature != null ? [residentFeature] : []})));
 
-        // 2. CREATE RESIDENT SOURCE
-        await style.addSource(GeoJsonSource(id: "resident-marker-source", data: jsonEncode({
-          "type": "FeatureCollection",
-          "features": residentFeature != null ? [residentFeature] : []
-        })));
+        await style.addLayer(CircleLayer(id: "resident-marker-circle", sourceId: "resident-marker-source", circleRadius: 7.0, circleColor: Colors.blue.toARGB32(), circleStrokeWidth: 3.0, circleStrokeColor: Colors.white.toARGB32(), circleSortKey: 2000.0));
+        await style.addLayer(SymbolLayer(id: "resident-marker-label", sourceId: "resident-marker-source", textField: "{label}", textSize: 10.0, textColor: Colors.blue.toARGB32(), textHaloColor: Colors.white.toARGB32(), textHaloWidth: 2.0, textAnchor: TextAnchor.TOP, textOffset: [0, 1.2], symbolSortKey: 2000.0));
 
-        // 3. CREATE RESIDENT CIRCLE LAYER
-        await style.addLayer(CircleLayer(
-          id: "resident-marker-circle",
-          sourceId: "resident-marker-source",
-          circleRadius: 7.0,
-          circleColor: Colors.blue.toARGB32(),
-          circleStrokeWidth: 3.0,
-          circleStrokeColor: Colors.white.toARGB32(),
-          circleSortKey: 2000.0, 
-          visibility: mbox.Visibility.VISIBLE,
-        ));
+        await style.addLayer(CircleLayer(id: circleLayerId, sourceId: sourceId, circleRadius: 9.0, circleColor: Colors.green.toARGB32(), circleStrokeWidth: 3.0, circleStrokeColor: Colors.white.toARGB32(), circleSortKey: 3000.0, filter: ["==", ["get", "type"], "TRUCK"]));
+        await style.addLayer(CircleLayer(id: "session-start-circle", sourceId: sourceId, circleRadius: 7.0, circleColor: Colors.green.shade800.toARGB32(), circleStrokeWidth: 2.0, circleStrokeColor: Colors.white.toARGB32(), circleSortKey: 2500.0, filter: ["==", ["get", "type"], "SESSION_START"]));
 
-        // 4. CREATE RESIDENT LABEL LAYER
-        await style.addLayer(SymbolLayer(
-          id: "resident-marker-label",
-          sourceId: "resident-marker-source",
-          textField: "{label}",
-          textSize: 10.0,
-          textColor: Colors.blue.toARGB32(),
-          textHaloColor: Colors.white.toARGB32(),
-          textHaloWidth: 2.0,
-          textAnchor: TextAnchor.TOP,
-          textOffset: [0, 1.2],
-          symbolSortKey: 2000.0,
-          visibility: mbox.Visibility.VISIBLE,
-        ));
-
-        // 5. CREATE TRUCK CIRCLE LAYER
-        await style.addLayer(CircleLayer(
-          id: circleLayerId,
-          sourceId: sourceId,
-          circleRadius: 9.0,
-          circleColor: Colors.green.toARGB32(),
-          circleStrokeWidth: 3.0,
-          circleStrokeColor: Colors.white.toARGB32(),
-          circleSortKey: 3000.0,
-          visibility: mbox.Visibility.VISIBLE,
-        ));
-
-        // 6. CREATE TRUCK LABEL LAYER
-        await style.addLayer(SymbolLayer(
-          id: labelLayerId,
-          sourceId: sourceId,
-          textField: "{label}",
-          textSize: 13.0,
-          textColor: Colors.green.toARGB32(),
-          textHaloColor: Colors.white.toARGB32(),
-          textHaloWidth: 2.0,
-          textAnchor: TextAnchor.BOTTOM,
-          textOffset: [0, -1.2],
-          symbolSortKey: 3000.0,
-          textAllowOverlap: true,
-          iconAllowOverlap: true,
-          visibility: mbox.Visibility.VISIBLE,
-        ));
+        await style.addLayer(SymbolLayer(id: labelLayerId, sourceId: sourceId, textField: "{label}", textSize: 13.0, textColor: Colors.green.toARGB32(), textHaloColor: Colors.white.toARGB32(), textHaloWidth: 2.0, textAnchor: TextAnchor.BOTTOM, textOffset: [0, -1.2], symbolSortKey: 3000.0, textAllowOverlap: true, iconAllowOverlap: true, filter: ["==", ["get", "type"], "TRUCK"]));
+        await style.addLayer(SymbolLayer(id: "session-start-label", sourceId: sourceId, textField: "{label}", textSize: 10.0, textColor: Colors.green.shade800.toARGB32(), textHaloColor: Colors.white.toARGB32(), textHaloWidth: 2.0, textAnchor: TextAnchor.BOTTOM, textOffset: [0, -1.0], symbolSortKey: 2500.0, filter: ["==", ["get", "type"], "SESSION_START"]));
 
         if (mounted) setState(() => _truckLayersCreated = true);
       } else {
-        // UPDATE SOURCES
-        await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
-        await style.setStyleSourceProperty("resident-marker-source", "data", jsonEncode({
-          "type": "FeatureCollection",
-          "features": residentFeature != null ? [residentFeature] : []
-        }));
+        await style.setStyleSourceProperty(sourceId, "data", jsonEncode({"type": "FeatureCollection", "features": features}));
+        await style.setStyleSourceProperty("resident-marker-source", "data", jsonEncode({"type": "FeatureCollection", "features": residentFeature != null ? [residentFeature] : []}));
       }
     } catch (e) {
-      debugPrint("[RESIDENT MAP] Marker Update Error: $e");
       if (mounted) setState(() => _truckLayersCreated = false);
-    } finally {
-      _isUpdatingMarkers = false;
-    }
+    } finally { _isUpdatingMarkers = false; }
   }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final bool isDesktop = constraints.maxWidth >= 900;
-      return Scaffold(
-        backgroundColor: const Color(0xFFF8F9FA), 
-        body: isDesktop ? _buildDesktopLayout() : _buildMobileLayout(),
-        floatingActionButton: _buildMapControls(),
-      );
+      return Scaffold(backgroundColor: const Color(0xFFF8F9FA), body: isDesktop ? _buildDesktopLayout() : _buildMobileLayout(), floatingActionButton: _buildMapControls());
     });
   }
 
   Widget _buildMapControls() {
-    return Positioned(
-      bottom: 200, right: 16,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildFab(Icons.my_location_rounded, "My Location", _recenterToResident),
-          const SizedBox(height: 12),
-          _buildFab(Icons.map_outlined, "Recenter Balintawak", _recenterToBalintawak),
-        ],
-      ),
-    );
+    return Positioned(bottom: 200, right: 16, child: Column(mainAxisSize: MainAxisSize.min, children: [_buildFab(Icons.my_location_rounded, "My Location", _recenterToResident), const SizedBox(height: 12), _buildFab(Icons.map_outlined, "Recenter Balintawak", _recenterToBalintawak)]));
   }
 
   Widget _buildFab(IconData icon, String label, VoidCallback onTap) {
-    return FloatingActionButton.small(
-      heroTag: label,
-      onPressed: onTap,
-      backgroundColor: Colors.white,
-      foregroundColor: AppColors.tealText,
-      child: Icon(icon),
-    );
+    return FloatingActionButton.small(heroTag: label, onPressed: onTap, backgroundColor: Colors.white, foregroundColor: AppColors.tealText, child: Icon(icon));
   }
 
   Widget _buildDesktopLayout() {
     return Row(children: [
-      Expanded(child: Stack(children: [
-        Positioned.fill(child: MapWidget(onMapCreated: _onMapCreated, onStyleLoadedListener: _onStyleLoaded, viewport: CameraViewportState(center: Point(coordinates: Position(121.1623, 13.9413)), zoom: 14.5))), 
-        _buildHeader(),
-        _buildDebugOverlay()
-      ])),
+      Expanded(child: Stack(children: [Positioned.fill(child: MapWidget(onMapCreated: _onMapCreated, onStyleLoadedListener: _onStyleLoaded, viewport: CameraViewportState(center: Point(coordinates: Position(121.1623, 13.9413)), zoom: 14.5))), _buildHeader(), _buildDebugOverlay()])),
       Container(width: 400, decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withAlpha(10), blurRadius: 20, offset: const Offset(-5, 0))]), child: _buildFleetStatusContent(null))
     ]);
   }
@@ -435,32 +385,19 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   Widget _buildMobileLayout() {
     return Stack(children: [
       Positioned.fill(child: MapWidget(onMapCreated: _onMapCreated, onStyleLoadedListener: _onStyleLoaded, viewport: CameraViewportState(center: Point(coordinates: Position(121.1623, 13.9413)), zoom: 14.5))),
-      _buildHeader(),
-      _buildDebugOverlay(),
+      _buildHeader(), _buildDebugOverlay(),
       Positioned.fill(child: DraggableScrollableSheet(initialChildSize: 0.45, minChildSize: 0.18, maxChildSize: 0.95, snap: true, snapSizes: const [0.18, 0.45, 0.95], builder: (context, scrollController) => PointerInterceptor(child: Container(decoration: BoxDecoration(color: Colors.white, borderRadius: const BorderRadius.vertical(top: Radius.circular(40)), boxShadow: [BoxShadow(color: Colors.black.withAlpha(20), blurRadius: 25, spreadRadius: 5, offset: const Offset(0, -5))]), child: _buildFleetStatusContent(scrollController, isMobile: true)))))
     ]);
   }
 
   Widget _buildDebugOverlay() {
     final activeTrucksWithGps = _trucks.where((t) => (t['latitude'] ?? 0) != 0).toList();
-    return Positioned(
-      top: 100, right: 20,
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        color: Colors.black54,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Text("DATA TRUCKS: ${_trucks.length}", style: const TextStyle(color: Colors.white, fontSize: 10)),
-            Text("GPS TRUCKS: ${activeTrucksWithGps.length}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-            ...activeTrucksWithGps.map((t) => Text("${t['truck_id']}: ${t['latitude']}, ${t['longitude']}", style: const TextStyle(color: Colors.greenAccent, fontSize: 9))),
-            Text("MAP READY: ${mapboxMap != null}", style: const TextStyle(color: Colors.white, fontSize: 10)),
-            Text("LAYERS READY: $_truckLayersCreated", style: const TextStyle(color: Colors.white, fontSize: 10)),
-            Text("RESIDENT LOC: ${_residentPosition != null}", style: const TextStyle(color: Colors.white, fontSize: 10)),
-          ],
-        ),
-      ),
-    );
+    return Positioned(top: 100, right: 20, child: Container(padding: const EdgeInsets.all(8), color: Colors.black54, child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      Text("DATA TRUCKS: ${_trucks.length}", style: const TextStyle(color: Colors.white, fontSize: 10)),
+      Text("GPS TRUCKS: ${activeTrucksWithGps.length}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+      ...activeTrucksWithGps.map((t) => Text("${t['truck_id']}: ${t['latitude']}, ${t['longitude']}", style: const TextStyle(color: Colors.greenAccent, fontSize: 9))),
+      Text("MAP READY: ${mapboxMap != null}", style: const TextStyle(color: Colors.white, fontSize: 10)),
+    ])));
   }
 
   Widget _buildHeader() {
@@ -483,28 +420,18 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     final String truckId = truck['truck_id'].toString();
     final String status = (truck['status'] ?? 'IDLE').toString().toUpperCase();
     final Color color = status == 'ACTIVE' || status == 'COLLECTING' ? const Color(0xFF00C853) : const Color(0xFFFF1744);
-    
     final double speed = (truck['speed'] ?? 0.0).toDouble();
     final double distance = (truck['distance'] ?? 0.0).toDouble();
     final String driverName = (truck['driver_name'] ?? "Driver").toString();
-
-    // Use current session data from Firebase
     String eta;
     if (truck['eta_minutes'] != null) eta = "${truck['eta_minutes']} mins";
     else eta = "${PredictionEngine.estimateArrivalTime(distance > 0 ? distance : 2.5, [speed > 5 ? speed : 15.0]).toStringAsFixed(0)} mins";
-
-    return InkWell(
-      onTap: () => _focusOnTruck(truck),
-      child: Container(margin: const EdgeInsets.fromLTRB(20, 0, 20, 16), padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 12, offset: const Offset(0, 4))], border: Border.all(color: const Color(0xFFF8F9FA), width: 1.5)), child: Column(children: [
-        Row(children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(16)), child: const Icon(Icons.local_shipping_outlined, color: Color(0xFF00897B), size: 26)), const SizedBox(width: 20), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(truckId, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 19, color: Color(0xFF1A1A1A))), Text(driverName, style: const TextStyle(color: Color(0xFF757575), fontSize: 12, fontWeight: FontWeight.w500))])), Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: color.withAlpha(20), borderRadius: BorderRadius.circular(12)), child: Text(status, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w900))), const SizedBox(width: 12), Column(crossAxisAlignment: CrossAxisAlignment.end, children: [Text(eta, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))), const Text("ETA", style: TextStyle(fontSize: 8, color: Colors.grey, fontWeight: FontWeight.w700))])]),
-        const SizedBox(height: 28),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildRefinedInfo(Icons.speed_rounded, "Fleet Velocity", "${speed.toStringAsFixed(1)} km/h"), _buildRefinedInfo(Icons.location_on_outlined, "Current Area", (truck['current_purok'] ?? "Barangay Balintawak").toString())]),
-        const SizedBox(height: 24),
-        Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStatItem("Distance", "${distance.toStringAsFixed(2)}km"), Container(width: 1, height: 20, color: Colors.black12), _buildStatItem("Accuracy", "${(truck['accuracy'] ?? 0.0).toStringAsFixed(1)}m")])),
-        const SizedBox(height: 24),
-        Row(children: [Expanded(child: _buildSecondaryButton("TRACK TRUCK", Icons.center_focus_strong_rounded, () => _focusOnTruck(truck))), const SizedBox(width: 12), Expanded(child: _buildPrimaryButton(_comparingTrucks.contains(truckId) ? "HIDE PATH" : "COMPARE PATH", Icons.insights_rounded, _comparingTrucks.contains(truckId) ? const Color(0xFFFFA726) : const Color(0xFF00BFA5), () => setState(() => _comparingTrucks.contains(truckId) ? _comparingTrucks.remove(truckId) : _comparingTrucks.add(truckId))))])
-      ])),
-    );
+    return InkWell(onTap: () => _focusOnTruck(truck), child: Container(margin: const EdgeInsets.fromLTRB(20, 0, 20, 16), padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 12, offset: const Offset(0, 4))], border: Border.all(color: const Color(0xFFF8F9FA), width: 1.5)), child: Column(children: [
+      Row(children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(16)), child: const Icon(Icons.local_shipping_outlined, color: Color(0xFF00897B), size: 26)), const SizedBox(width: 20), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(truckId, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 19, color: Color(0xFF1A1A1A))), Text(driverName, style: const TextStyle(color: Color(0xFF757575), fontSize: 12, fontWeight: FontWeight.w500))])), Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: color.withAlpha(20), borderRadius: BorderRadius.circular(12)), child: Text(status, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w900))), const SizedBox(width: 12), Column(crossAxisAlignment: CrossAxisAlignment.end, children: [Text(eta, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))), const Text("ETA", style: TextStyle(fontSize: 8, color: Colors.grey, fontWeight: FontWeight.w700))])]),
+      const SizedBox(height: 28), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildRefinedInfo(Icons.speed_rounded, "Fleet Velocity", "${speed.toStringAsFixed(1)} km/h"), _buildRefinedInfo(Icons.location_on_outlined, "Current Area", (truck['current_purok'] ?? "Barangay Balintawak").toString())]),
+      const SizedBox(height: 24), Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStatItem("Distance", "${distance.toStringAsFixed(2)}km"), Container(width: 1, height: 20, color: Colors.black12), _buildStatItem("Accuracy", "${(truck['accuracy'] ?? 0.0).toStringAsFixed(1)}m")])),
+      const SizedBox(height: 24), Row(children: [Expanded(child: _buildSecondaryButton("TRACK TRUCK", Icons.center_focus_strong_rounded, () => _focusOnTruck(truck))), const SizedBox(width: 12), Expanded(child: _buildPrimaryButton(_comparingTrucks.contains(truckId) ? "HIDE PATH" : "COMPARE PATH", Icons.insights_rounded, _comparingTrucks.contains(truckId) ? const Color(0xFFFFA726) : const Color(0xFF00BFA5), () => setState(() => _comparingTrucks.contains(truckId) ? _comparingTrucks.remove(truckId) : _comparingTrucks.add(truckId))))])
+    ])));
   }
 
   Widget _buildRefinedInfo(IconData icon, String label, String val) {
@@ -524,27 +451,14 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   }
 
   Widget _buildFleetGuide() {
-    return Container(
-      margin: const EdgeInsets.all(24), 
-      padding: const EdgeInsets.all(28), 
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), border: Border.all(color: const Color(0xFFF0F0F0)), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 10, offset: const Offset(0, 4))]), 
-      child: const Column(
-        crossAxisAlignment: CrossAxisAlignment.start, 
-        children: [
-          Text("Tracking Guide", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1A1A1A))), 
-          SizedBox(height: 20), 
-          _GuideRow(Icons.circle, "Green: Active collection", color: Colors.green), 
-          SizedBox(height: 12), 
-          _GuideRow(Icons.circle, "Yellow: Idle / Signal issue", color: Colors.yellow), 
-          SizedBox(height: 12), 
-          _GuideRow(Icons.circle, "Magenta: Truck is FULL", color: Colors.pinkAccent),
-          SizedBox(height: 12),
-          _GuideRow(Icons.linear_scale, "Dashed: Signal gap detected", color: Colors.grey),
-          SizedBox(height: 12),
-          _GuideRow(Icons.check_circle_outline_rounded, "Track real-time ETA & distance"),
-        ]
-      )
-    );
+    return Container(margin: const EdgeInsets.all(24), padding: const EdgeInsets.all(28), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), border: Border.all(color: const Color(0xFFF0F0F0)), boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 10, offset: const Offset(0, 4))]), child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text("Tracking Guide", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1A1A1A))), SizedBox(height: 20),
+      _GuideRow(Icons.circle, "Green: Active collection", color: Colors.green), SizedBox(height: 12),
+      _GuideRow(Icons.circle, "Yellow: Idle / Signal issue", color: Colors.yellow), SizedBox(height: 12),
+      _GuideRow(Icons.circle, "Magenta: Truck is FULL", color: Colors.pinkAccent), SizedBox(height: 12),
+      _GuideRow(Icons.linear_scale, "Dashed: Signal gap detected", color: Colors.grey), SizedBox(height: 12),
+      _GuideRow(Icons.check_circle_outline_rounded, "Track real-time ETA & distance"),
+    ]));
   }
 }
 
