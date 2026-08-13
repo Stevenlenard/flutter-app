@@ -198,11 +198,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
           });
         }
         if (isGap && currentSegmentCoords.isNotEmpty) {
-           segments.add({
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": [currentSegmentCoords.last, [lng, lat]]},
-            "properties": {"color": "YELLOW", "isGap": true}
-          });
+           // Skip gap segments to prevent fake teleport lines
+           debugPrint("[RESIDENT MAP] Skipping GPS Gap in route.");
         }
         currentSegmentCoords = [[lng, lat]];
         currentColor = color;

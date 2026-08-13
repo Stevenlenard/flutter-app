@@ -29,14 +29,18 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   PolylineAnnotationManager? _polylineAnnotationManager;
   
   final Map<String, StreamSubscription> _sharedRouteSubscriptions = {};
-  final Map<String, List<Map<String, dynamic>>> _webSharedRouteData = {}; 
-  Map<String, List<Offset>> _webSharedRoutePixels = {}; 
+  final Map<String, List<PolylineAnnotation>> _sharedRouteAnnotations = {};
+  final Map<String, List<PointAnnotation>> _sharedSpecialAnnotations = {};
 
   Map<String, Offset> _webMarkerPositions = {};
   Map<String, List<Map<String, dynamic>>> _webHeatmapData = {}; 
   Map<String, List<Offset>> _webHeatmapPixels = {}; 
   Map<String, List<Offset>> _webOptimizedPixels = {};
   
+  // NEW: Web shared route pixels for web painter
+  Map<String, List<Map<String, dynamic>>> _webSharedRouteData = {}; 
+  Map<String, List<Offset>> _webSharedRoutePixels = {}; 
+
   final Map<String, List<PolylineAnnotation>> _truckHeatmapPaths = {};
   final Map<String, PolylineAnnotation> _truckOptimizedPaths = {};
 
@@ -87,6 +91,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   void _onMapCreated(MapboxMap map) { mapboxMap = map; }
 
   void _onStyleLoaded(dynamic data) async {
+    // Reset flags
     _pointAnnotationManager = await mapboxMap?.annotations.createPointAnnotationManager();
     _polylineAnnotationManager = await mapboxMap?.annotations.createPolylineAnnotationManager();
     if (!kIsWeb) _updateTruckMarkersNative();
@@ -99,8 +104,12 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
       final double lat = (truck['latitude'] ?? 13.9402).toDouble();
       final double lng = (truck['longitude'] ?? 121.1638).toDouble();
       final String internalId = (truck['internal_id'] ?? "").toString();
-      final screenPos = await mapboxMap!.pixelForCoordinate(Point(coordinates: Position(lng, lat)));
-      newMarkerPositions[internalId] = Offset(screenPos.x, screenPos.y);
+      try {
+        final screenPos = await mapboxMap!.pixelForCoordinate(Point(coordinates: Position(lng, lat)));
+        newMarkerPositions[internalId] = Offset(screenPos.x, screenPos.y);
+      } catch (e) {
+        debugPrint("[ADMIN MAP] Pixel mapping error: $e");
+      }
     }
     
     Map<String, List<Offset>> newHeatmapPixels = {};
@@ -139,7 +148,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
       setState(() { 
         _webMarkerPositions = newMarkerPositions; 
         _webHeatmapPixels = newHeatmapPixels; 
-        _webSharedRoutePixels = newSharedPixels;
+        _webSharedRoutePixels = newSharedPixels; // Updated
         _webOptimizedPixels = newOptimizedPixels; 
       });
     }
@@ -228,11 +237,8 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
           });
         }
         if (isGap && currentSegmentCoords.isNotEmpty) {
-           segments.add({
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": [currentSegmentCoords.last, [lng, lat]]},
-            "properties": {"color": "YELLOW", "isGap": true}
-          });
+           // We do NOT add a segment for gaps anymore to avoid fake shortcuts
+           debugPrint("[ADMIN MAP] Skipping GPS Gap in route.");
         }
         currentSegmentCoords = [[lng, lat]];
         currentColor = color;

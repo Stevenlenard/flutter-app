@@ -33,6 +33,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   int _unreadNotifications = 0;
   bool _isSimulationMode = false;
   Timer? _simulationTimer;
+  bool _isDebugPanelExpanded = false; // Collapsible Debug Panel
 
   // DEVELOPER TEST OVERRIDE
   String _testStatusOverride = "AUTO"; // AUTO, FORCE ACTIVE, FORCE IDLE, FORCE FULL
@@ -65,6 +66,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
   StreamSubscription? _statusSubscription;
   StreamSubscription? _purokStatusSubscription;
   StreamSubscription? _notificationSubscription;
+  StreamSubscription? _routePointsSubscription;
+
+  List<Map> _tripRoutePoints = [];
 
   @override
   void initState() {
@@ -80,6 +84,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _statusSubscription?.cancel();
     _purokStatusSubscription?.cancel();
     _notificationSubscription?.cancel();
+    _routePointsSubscription?.cancel();
     super.dispose();
   }
 
@@ -117,6 +122,20 @@ class _DriverDashboardState extends State<DriverDashboard> {
           if (v['isRead'] == false && v['truck_id'] == _user?.preferredTruck) unread++;
         });
         if (mounted) setState(() => _unreadNotifications = unread);
+      }
+    });
+  }
+
+  void _setupRoutePointsListener() {
+    if (_sessionId == null) return;
+    _routePointsSubscription?.cancel();
+    _routePointsSubscription = _database.ref('driver_routes/$_sessionId/route').onValue.listen((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final Map data = event.snapshot.value as Map;
+        final List<Map> list = [];
+        data.forEach((k, v) => list.add(v as Map));
+        list.sort((a, b) => (a['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
+        if (mounted) setState(() => _tripRoutePoints = list);
       }
     });
   }
@@ -207,6 +226,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
         'maintenanceProcessed': false,
         'start_lat': startPos.latitude,
         'start_lng': startPos.longitude,
+        'start_accuracy': startPos.accuracy,
       });
 
       Map<String, dynamic> initialProgress = {};
@@ -222,6 +242,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
       }
       await _database.ref('collection_progress').child(_sessionId!).set(initialProgress);
 
+      // CRITICAL: First route point must be EXACTLY the start point
       _appendRoutePoint(startPos, "ACTIVE", "GREEN");
 
       if (mounted) {
@@ -239,6 +260,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
         });
       }
       _setupPurokListener();
+      _setupRoutePointsListener();
       _startTracking();
       _startIdleDetection();
     } catch (e) {
@@ -617,35 +639,63 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ],
             );
           }),
-          // DEBUG OVERLAY & WALK TEST PANEL
+          // COLLAPSIBLE DEBUG OVERLAY & WALK TEST PANEL
           Positioned(
             top: 100, left: 10,
             child: Container(
               width: 180,
-              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.85),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.white24),
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text("WALK TEST / DEBUG", style: TextStyle(color: Colors.yellow, fontSize: 10, fontWeight: FontWeight.bold)),
-                  const Divider(color: Colors.white24, height: 12),
-                  Text("GPS: ${_currentPosition != null ? 'LOCKED' : 'SEARCHING'}", style: TextStyle(color: _currentPosition != null ? Colors.greenAccent : Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold)),
-                  if (_currentPosition != null) ...[
-                    Text("LAT: ${_currentPosition!.latitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
-                    Text("LNG: ${_currentPosition!.longitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
-                    Text("ACCURACY: ${_currentPosition!.accuracy.toStringAsFixed(1)}m", style: TextStyle(color: _currentPosition!.accuracy < 20 ? Colors.greenAccent : Colors.orangeAccent, fontSize: 8)),
-                  ],
-                  Text("DISTANCE: ${_distance.toStringAsFixed(3)} km", style: const TextStyle(color: Colors.white, fontSize: 9)),
-                  Text("SESSION: ${_sessionId?.substring(0, 8) ?? 'none'}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
-                  const SizedBox(height: 8),
-                  const Text("FORCE STATUS COLOR:", style: TextStyle(color: Colors.cyanAccent, fontSize: 8, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  _buildOverrideButtons(),
+                  InkWell(
+                    onTap: () => setState(() => _isDebugPanelExpanded = !_isDebugPanelExpanded),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("DEBUG PANEL", style: TextStyle(color: Colors.yellow, fontSize: 10, fontWeight: FontWeight.bold)),
+                          Icon(_isDebugPanelExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_isDebugPanelExpanded) ...[
+                    const Divider(color: Colors.white24, height: 1),
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("TRIP: ${_sessionId ?? 'none'}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
+                          if (_startDateTime != null)
+                            Text("START: ${_tripRoutePoints.isNotEmpty ? _tripRoutePoints.first['lat'] : '...' }, ${_tripRoutePoints.isNotEmpty ? _tripRoutePoints.first['lng'] : '...'}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
+                          Text("GPS: ${_currentPosition != null ? 'LOCKED' : 'SEARCHING'}", style: TextStyle(color: _currentPosition != null ? Colors.greenAccent : Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold)),
+                          if (_currentPosition != null) ...[
+                            Text("LAT: ${_currentPosition!.latitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
+                            Text("LNG: ${_currentPosition!.longitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
+                            Text("ACCURACY: ${_currentPosition!.accuracy.toStringAsFixed(1)}m", style: TextStyle(color: _currentPosition!.accuracy < 20 ? Colors.greenAccent : Colors.orangeAccent, fontSize: 8)),
+                          ],
+                          Text("ROUTE POINTS: ${_tripRoutePoints.length}", style: const TextStyle(color: Colors.white, fontSize: 8)),
+                          Text("ACTIVE SEGMENTS: ${_tripRoutePoints.where((p) => p['status'] == 'ACTIVE').length}", style: const TextStyle(color: Colors.greenAccent, fontSize: 7)),
+                          Text("IDLE SEGMENTS: ${_tripRoutePoints.where((p) => p['status'] == 'IDLE').length}", style: const TextStyle(color: Colors.yellowAccent, fontSize: 7)),
+                          Text("FULL SEGMENTS: ${_tripRoutePoints.where((p) => p['status'] == 'FULL').length}", style: const TextStyle(color: Colors.pinkAccent, fontSize: 7)),
+                          Text("DISTANCE: ${_distance.toStringAsFixed(3)} km", style: const TextStyle(color: Colors.white, fontSize: 9)),
+                          Text("STATUS: $_status", style: TextStyle(color: _buildStatusIndicatorColor(), fontSize: 8, fontWeight: FontWeight.bold)),
+                          Text("MAP ROUTE: ${_sessionId != null ? 'VISIBLE' : 'HIDDEN'}", style: const TextStyle(color: Colors.white, fontSize: 8)),
+                          const SizedBox(height: 8),
+                          const Text("FORCE STATUS COLOR:", style: TextStyle(color: Colors.cyanAccent, fontSize: 8, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 4),
+                          _buildOverrideButtons(),
+                        ],
+                      ),
+                    ),
+                  ]
                 ],
               ),
             ),
@@ -718,8 +768,17 @@ class _DriverDashboardState extends State<DriverDashboard> {
     );
   }
 
+  Color _buildStatusIndicatorColor() {
+    switch(_status) {
+      case "ACTIVE": return Colors.greenAccent;
+      case "IDLE": return Colors.yellowAccent;
+      case "FULL": return Colors.orangeAccent;
+      default: return Colors.white70;
+    }
+  }
+
   Widget _buildStatusIndicator() {
-    Color color = switch(_status) { "ACTIVE" => Colors.greenAccent, "IDLE" => Colors.yellowAccent, "FULL" => Colors.orangeAccent, _ => Colors.white70 };
+    Color color = _buildStatusIndicatorColor();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(color: color.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: color)),

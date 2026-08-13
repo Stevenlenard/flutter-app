@@ -52,6 +52,13 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   bool _driverSourceCreated = false;
   bool _routeSourceCreated = false;
 
+  // NEW: Session Meta Persistence
+  Map? _lastSessionData;
+
+  // NEW: Follow Mode State
+  bool _isFollowLocked = true;
+  String _currentStatus = "ACTIVE";
+
   @override
   void initState() {
     super.initState();
@@ -73,7 +80,8 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       });
       _updateLocalDriverMarker(widget.manualPosition!);
       
-      if (mapboxMap != null) {
+      // Auto-follow logic for simulation
+      if (_isFollowLocked && mapboxMap != null) {
         mapboxMap?.setCamera(CameraOptions(
           center: Point(coordinates: Position(widget.manualPosition!.longitude, widget.manualPosition!.latitude)),
           zoom: 16.5,
@@ -129,6 +137,18 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     _truckSubscription = _database.ref('truck_locations').onValue.listen((event) {
       if (event.snapshot.exists && event.snapshot.value != null) {
         _lastTruckData = event.snapshot.value as Map;
+        
+        // --- NEW: Dynamic Status Halo Sync ---
+        final String tid = (widget.focusTruckId ?? "GT-001").toUpperCase();
+        if (_lastTruckData!.containsKey(tid)) {
+          final myData = _lastTruckData![tid] as Map;
+          final String newStatus = (myData['status'] ?? "ACTIVE").toString().toUpperCase();
+          if (newStatus != _currentStatus) {
+            setState(() => _currentStatus = newStatus);
+            if (_lastLocalPos != null) _updateLocalDriverMarker(_lastLocalPos!);
+          }
+        }
+
         if (_managersReady) {
           _lastTruckData!.forEach((key, value) {
             _updateSingleTruckMarker(key.toString(), value as Map);
@@ -144,6 +164,8 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     _routeSubscription = _database.ref('driver_routes/${widget.currentSessionId}').onValue.listen((event) {
       if (event.snapshot.exists && event.snapshot.value != null) {
         final Map data = event.snapshot.value as Map;
+        _lastSessionData = data;
+
         if (data['route'] != null) {
           final Map routeData = data['route'] as Map;
           final List<Map> points = [];
@@ -188,6 +210,13 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _onMapCreated(MapboxMap map) { mapboxMap = map; }
 
   void _onStyleLoaded(dynamic data) async {
+    debugPrint("[DRIVER MAP] Style loaded. Re-initializing layers...");
+    
+    // CRITICAL: Reset creation flags so layers are re-added to new style
+    _driverSourceCreated = false;
+    _routeSourceCreated = false;
+    _specialMarkers.clear(); // Clear local cache to force redraw
+
     try {
       await mapboxMap?.location.updateSettings(LocationComponentSettings(enabled: false, pulsingEnabled: false));
     } catch (e) {}
@@ -200,29 +229,86 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     if (!mounted) return;
     _truckMarkers.clear();
     setState(() => _managersReady = true);
+    
+    // Restore elements
     if (_lastLocalPos != null) _updateLocalDriverMarker(_lastLocalPos!);
     if (_lastTruckData != null) _lastTruckData!.forEach((k, v) => _updateSingleTruckMarker(k.toString(), v as Map));
     if (_lastPoints.isNotEmpty) _updateRoutePolyline(_lastPoints);
+    if (_lastSessionData != null) _updateSpecialMarkers(_lastSessionData!);
   }
 
   Future<void> _updateLocalDriverMarker(geo.Position pos) async {
-    if (mapboxMap == null || pos.latitude == 0 || pos.longitude == 0) return;
     final String sourceId = "driver-live-location-source";
     final tid = (widget.focusTruckId ?? "GT-001").toUpperCase();
-    final feature = {"type": "Feature", "geometry": {"type": "Point", "coordinates": [pos.longitude, pos.latitude]}, "properties": {"name": "DRIVER", "truckId": tid}};
+    final feature = {
+      "type": "Feature", 
+      "geometry": {"type": "Point", "coordinates": [pos.longitude, pos.latitude]}, 
+      "properties": {"name": "DRIVER", "truckId": tid, "status": _currentStatus}
+    };
+
     try {
       final style = mapboxMap!.style;
       if (!_driverSourceCreated) {
         await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(feature)));
-        await style.addLayer(CircleLayer(id: "driver-live-location-circle", sourceId: sourceId, circleRadius: 8.0, circleColor: Colors.green.toARGB32(), circleOpacity: 1.0, circleStrokeWidth: 3.0, circleStrokeColor: Colors.white.toARGB32(), circleSortKey: 3000.0));
-        await style.addLayer(SymbolLayer(id: "driver-live-location-label", sourceId: sourceId, textField: "DRIVER\n$tid", textSize: 14.0, textColor: Colors.green.toARGB32(), textHaloColor: Colors.white.toARGB32(), textHaloWidth: 2.0, textAnchor: TextAnchor.BOTTOM, textOffset: [0, -1.0], symbolSortKey: 3000.0, textAllowOverlap: true, iconAllowOverlap: true));
+
+        // 1. STATUS HALO (Large, semi-transparent)
+        await style.addLayer(CircleLayer(
+          id: "driver-live-location-halo", 
+          sourceId: sourceId, 
+          circleRadius: 18.0, 
+          circleOpacity: 0.3,
+          circleStrokeWidth: 2.0,
+          circleSortKey: 2900.0
+        ));
+
+        // 2. DRIVER CORE (Identity)
+        await style.addLayer(CircleLayer(
+          id: "driver-live-location-circle", 
+          sourceId: sourceId, 
+          circleRadius: 8.0, 
+          circleColor: Colors.green.toARGB32(), 
+          circleOpacity: 1.0, 
+          circleStrokeWidth: 3.0, 
+          circleStrokeColor: Colors.white.toARGB32(), 
+          circleSortKey: 3000.0
+        ));
+
+        await style.addLayer(SymbolLayer(
+          id: "driver-live-location-label", 
+          sourceId: sourceId, 
+          textField: "DRIVER\n$tid", 
+          textSize: 14.0, 
+          textColor: Colors.green.toARGB32(), 
+          textHaloColor: Colors.white.toARGB32(), 
+          textHaloWidth: 2.0, 
+          textAnchor: TextAnchor.BOTTOM, 
+          textOffset: [0, -1.5], 
+          symbolSortKey: 3000.0, 
+          textAllowOverlap: true, 
+          iconAllowOverlap: true
+        ));
+
+        // Apply expressions via style properties for compatibility
+        final statusColorExpression = [
+          "match", ["get", "status"],
+          "IDLE", Colors.yellow.toARGB32(),
+          "FULL", Colors.pinkAccent.toARGB32(),
+          Colors.green.toARGB32() // ACTIVE
+        ];
+
+        await style.setStyleLayerProperty("driver-live-location-halo", "circle-color", statusColorExpression);
+        await style.setStyleLayerProperty("driver-live-location-halo", "circle-stroke-color", statusColorExpression);
+
         if (mounted) setState(() => _driverSourceCreated = true);
       } else {
         await style.setStyleSourceProperty(sourceId, "data", jsonEncode(feature));
       }
-      if (!_hasInitialGpsFocus) {
+
+      if (_isFollowLocked && !_hasInitialGpsFocus) {
         await mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(pos.longitude, pos.latitude)), zoom: 16.5));
         _hasInitialGpsFocus = true;
+      } else if (_isFollowLocked) {
+        await mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(pos.longitude, pos.latitude))));
       }
     } catch (e) {}
   }
@@ -260,7 +346,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
       if (isGap || color != currentColor) {
         if (currentSegmentCoords.length >= 2) segments.add({"type": "Feature", "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)}, "properties": {"color": currentColor, "isGap": false}});
-        if (isGap && currentSegmentCoords.isNotEmpty) segments.add({"type": "Feature", "geometry": {"type": "LineString", "coordinates": [currentSegmentCoords.last, [lng, lat]]}, "properties": {"color": "YELLOW", "isGap": true}});
+        // Removed dashed yellow gap segment to prevent fake straight lines
         currentSegmentCoords = [[lng, lat]]; currentColor = color;
       } else { currentSegmentCoords.add([lng, lat]); }
       lastTimestamp = timestamp;
@@ -284,25 +370,88 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     try { await mapboxMap!.style.setStyleSourceProperty("driver-route-source", "data", jsonEncode({"type": "FeatureCollection", "features": []})); } catch (e) {}
   }
 
+  Widget _buildLegendItem(Color color, String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         children: [
-          MapWidget(onMapCreated: _onMapCreated, onStyleLoadedListener: _onStyleLoaded, viewport: CameraViewportState(center: Point(coordinates: _balintawakCenter), zoom: 14.5)),
+          MapWidget(
+            onMapCreated: _onMapCreated, 
+            onStyleLoadedListener: _onStyleLoaded, 
+            onCameraChangeListener: (e) {
+              // Note: isGesture is not available in this version of the SDK.
+              // Follow mode will remain active unless manually toggled via button.
+            },
+            viewport: CameraViewportState(center: Point(coordinates: _balintawakCenter), zoom: 14.5)
+          ),
           Positioned(top: 60, right: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)), child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text("GPS: ${_lastLocalPos != null ? 'LOCKED' : 'SEARCHING...'}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
             if (_lastLocalPos != null) ...[Text("LAT: ${_lastLocalPos!.latitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.green, fontSize: 9)), Text("LNG: ${_lastLocalPos!.longitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.green, fontSize: 9)), Text("ACC: ${_lastLocalPos!.accuracy.toStringAsFixed(1)}m", style: const TextStyle(color: Colors.white70, fontSize: 8))],
             Text("MAP: ${mapboxMap != null ? 'READY' : 'LOADING...'}", style: const TextStyle(color: Colors.white, fontSize: 10)),
+            Text("STATUS: $_currentStatus", style: TextStyle(color: _getStatusColor(_currentStatus), fontSize: 10, fontWeight: FontWeight.w900)),
           ]))),
           if (!widget.isEmbedded) Positioned(top: 50, left: 20, child: FloatingActionButton(mini: true, backgroundColor: Colors.white, child: const Icon(Icons.arrow_back, color: Colors.black), onPressed: widget.onBack ?? () => Navigator.pop(context))),
+          
+          // MAP CONTROLS (Right side)
           Positioned(bottom: 20, right: 20, child: Column(mainAxisSize: MainAxisSize.min, children: [
-            FloatingActionButton(mini: true, backgroundColor: Colors.white, heroTag: "my_loc", child: const Icon(Icons.my_location, color: Colors.green), onPressed: () { if (_lastLocalPos != null) mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(_lastLocalPos!.longitude, _lastLocalPos!.latitude)), zoom: 17.5)); }),
+            FloatingActionButton(
+              mini: true, backgroundColor: _isFollowLocked ? Colors.teal : Colors.white,
+              heroTag: "follow_lock",
+              child: Icon(_isFollowLocked ? Icons.gps_fixed : Icons.gps_not_fixed, color: _isFollowLocked ? Colors.white : Colors.teal),
+              onPressed: () {
+                setState(() => _isFollowLocked = !_isFollowLocked);
+                if (_isFollowLocked && _lastLocalPos != null) {
+                  mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(_lastLocalPos!.longitude, _lastLocalPos!.latitude)), zoom: 16.5));
+                }
+              }
+            ),
             const SizedBox(height: 12),
             FloatingActionButton(mini: true, backgroundColor: Colors.white, heroTag: "recenter", child: const Icon(Icons.map_outlined, color: Colors.teal), onPressed: () { mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(121.1623, 13.9413)), zoom: 14.5)); }),
           ])),
+
+          // MAP LEGEND (Left side)
+          Positioned(
+            bottom: 20, left: 20,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.white.withOpacity(0.9), borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildLegendItem(Colors.green, "Active / Normal"),
+                  _buildLegendItem(Colors.yellow, "Idle / Signal Issue"),
+                  _buildLegendItem(Colors.pinkAccent, "Truck Full"),
+                  _buildLegendItem(Colors.blue, "Start Point"),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case "IDLE": return Colors.yellow;
+      case "FULL": return Colors.pinkAccent;
+      case "FINISHED": return Colors.blue;
+      default: return Colors.greenAccent;
+    }
   }
 }

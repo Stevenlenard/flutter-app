@@ -55,8 +55,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         final Map data = event.snapshot.value as Map;
         int total = 0; int completed = 0;
         data.forEach((key, value) {
-          total++;
-          if (value is Map && value['route_status'] == 'COMPLETED') completed++;
+          if (value is Map) {
+            total++;
+            if (value['route_status'] == 'COMPLETED' || value['status'] == 'COMPLETED') completed++;
+          }
         });
         if (mounted) setState(() { _totalRoutes = total; _completedRoutes = completed; _coveragePercent = total > 0 ? (completed / total) * 100 : 0.0; });
       }
@@ -66,23 +68,54 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
+      bool isDesktop = constraints.maxWidth >= 1024;
       bool isMobile = constraints.maxWidth < 600;
+
       return Scaffold(
-        backgroundColor: const Color(0xFFF4F7F9),
-        appBar: AppBar(title: const Text("Analytics"), leading: widget.onBack != null ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: widget.onBack) : null),
+        backgroundColor: const Color(0xFFF0F2F5),
+        appBar: widget.isEmbedded ? null : AppBar(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          title: const Text("Analytics Overview", style: TextStyle(color: Color(0xFF1A1A1A), fontWeight: FontWeight.w900)),
+          leading: widget.onBack != null ? IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.black, size: 20), onPressed: widget.onBack) : null,
+          centerTitle: true,
+        ),
         body: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
           padding: const EdgeInsets.all(24),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(child: _buildMetricCard("Routes Done", "$_completedRoutes/$_totalRoutes", Colors.green, isMobile)),
-              const SizedBox(width: 16),
-              Expanded(child: _buildMetricCard("Coverage", "${_coveragePercent.toInt()}%", Colors.blue, isMobile)),
-            ]),
-            const SizedBox(height: 24),
-            _buildChartSection("Truck Status", _buildTruckDonutChart()),
-            const SizedBox(height: 24),
-            _buildChartSection("Purok Frequency", _buildPurokBarChart()),
-          ]),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Summary Metrics Row
+              Row(
+                children: [
+                  Expanded(child: _buildMetricCard("Routes Done", "$_completedRoutes/$_totalRoutes", const Color(0xFF4CAF50), isMobile)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildMetricCard("Coverage", "${_coveragePercent.toInt()}%", const Color(0xFF2196F3), isMobile)),
+                ],
+              ),
+              const SizedBox(height: 32),
+
+              // Charts Layout
+              if (isDesktop) 
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 1, child: _buildChartSection("Truck Status Distribution", _buildTruckDonutChart())),
+                    const SizedBox(width: 24),
+                    Expanded(flex: 1, child: _buildChartSection("Purok Visit Frequency", _buildPurokBarChart())),
+                  ],
+                )
+              else 
+                Column(
+                  children: [
+                    _buildChartSection("Truck Status Distribution", _buildTruckDonutChart()),
+                    _buildChartSection("Purok Visit Frequency", _buildPurokBarChart()),
+                  ],
+                ),
+              const SizedBox(height: 100),
+            ],
+          ),
         ),
       );
     });
@@ -101,17 +134,32 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   Widget _buildChartSection(String title, Widget chart) {
     return Container(
-      width: double.infinity, padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-        const SizedBox(height: 24),
-        SizedBox(height: 200, child: chart),
-      ]),
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 15, offset: const Offset(0, 8))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: Color(0xFF2C3E50))),
+          const SizedBox(height: 32),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 250),
+            child: chart,
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildTruckDonutChart() {
+    if (_truckStatusData['Active'] == 0 && _truckStatusData['Idle'] == 0) {
+       return const Center(child: Text("No truck data available", style: TextStyle(color: Colors.grey, fontSize: 13)));
+    }
     return PieChart(PieChartData(sections: [
       PieChartSectionData(value: _truckStatusData['Active'] ?? 0, color: Colors.green, title: 'Active', radius: 40),
       PieChartSectionData(value: _truckStatusData['Idle'] ?? 0, color: Colors.grey, title: 'Idle', radius: 40),
