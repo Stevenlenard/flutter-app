@@ -24,6 +24,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   MapboxMap? mapboxMap;
   List<Map<dynamic, dynamic>> _trucks = [];
   String? _selectedTruckId;
+  bool _isFollowLocked = false; // New
 
   PointAnnotationManager? _pointAnnotationManager;
   PolylineAnnotationManager? _polylineAnnotationManager;
@@ -40,6 +41,10 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   // NEW: Web shared route pixels for web painter
   Map<String, List<Map<String, dynamic>>> _webSharedRouteData = {}; 
   Map<String, List<Offset>> _webSharedRoutePixels = {}; 
+  Map<String, Offset> _webStartPositions = {};
+  final Map<String, List<Map>> _lastRoutePoints = {}; 
+  final Set<String> _visiblePaths = {};
+  final Map<String, Position?> _sessionStartPoints = {};
 
   final Map<String, List<PolylineAnnotation>> _truckHeatmapPaths = {};
   final Map<String, PolylineAnnotation> _truckOptimizedPaths = {};
@@ -71,6 +76,18 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
           setState(() => _trucks = list);
           if (kIsWeb) _updateWebOverlays();
           else _updateTruckMarkersNative();
+
+          // Auto-follow logic for Admin
+          if (_isFollowLocked && _selectedTruckId != null) {
+            final t = list.firstWhere((element) => element['internal_id'] == _selectedTruckId || element['truck_id'] == _selectedTruckId, orElse: () => {});
+            if (t.isNotEmpty) {
+              final double lat = (t['latitude'] ?? 0.0).toDouble();
+              final double lng = (t['longitude'] ?? 0.0).toDouble();
+              if (lat != 0 && lng != 0) {
+                mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat))));
+              }
+            }
+          }
 
           for (var t in list) {
             final String tid = t['truck_id'];
@@ -112,6 +129,15 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
       }
     }
     
+    // 1.5 Update Start Marker Positions
+    Map<String, Offset> newStartPositions = {};
+    for (var entry in _sessionStartPoints.entries) {
+      if (entry.value != null && _visiblePaths.contains(entry.key)) {
+        final screenPos = await mapboxMap!.pixelForCoordinate(Point(coordinates: entry.value!));
+        newStartPositions[entry.key] = Offset(screenPos.x, screenPos.y);
+      }
+    }
+
     Map<String, List<Offset>> newHeatmapPixels = {};
     for (var entry in _webHeatmapData.entries) {
       List<Offset> pixels = [];
@@ -147,8 +173,9 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     if (mounted) {
       setState(() { 
         _webMarkerPositions = newMarkerPositions; 
+        _webStartPositions = newStartPositions;
         _webHeatmapPixels = newHeatmapPixels; 
-        _webSharedRoutePixels = newSharedPixels; // Updated
+        _webSharedRoutePixels = newSharedPixels;
         _webOptimizedPixels = newOptimizedPixels; 
       });
     }
@@ -160,6 +187,21 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     if (kIsWeb) Future.delayed(const Duration(milliseconds: 100), _updateWebOverlays);
   }
 
+  void _toggleTrack(String truckId, double lat, double lng) {
+    setState(() {
+      if (_selectedTruckId == truckId) {
+        _isFollowLocked = !_isFollowLocked;
+      } else {
+        _selectedTruckId = truckId;
+        _isFollowLocked = true;
+      }
+    });
+    if (_isFollowLocked) {
+      mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat)), zoom: 16.0));
+      if (kIsWeb) Future.delayed(const Duration(milliseconds: 100), _updateWebOverlays);
+    }
+  }
+
   void _setupSharedRouteSubscription(String truckId, String sessionId) {
     _sharedRouteSubscriptions[truckId]?.cancel();
     _sharedRouteSubscriptions[truckId] = _database.ref('driver_routes/$sessionId/route').onValue.listen((event) {
@@ -169,15 +211,27 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
         data.forEach((key, value) => points.add(value as Map));
         points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
         
-        if (!kIsWeb) _updateSharedRoutePolyline(truckId, points);
-        else _updateWebSharedRoute(truckId, points);
+        _lastRoutePoints[truckId] = points;
+        
+        if (_visiblePaths.contains(truckId)) {
+          if (!kIsWeb) _updateSharedRoutePolyline(truckId, points);
+          else _updateWebSharedRoute(truckId, points);
+        }
       }
     });
 
     _database.ref('driver_routes/$sessionId').onValue.listen((event) {
       if (event.snapshot.exists && event.snapshot.value != null) {
         final Map data = event.snapshot.value as Map;
-        _updateAdminSpecialMarkers(truckId, data);
+        if (data['start_lat'] != null && data['start_lng'] != null) {
+          if (mounted) {
+            setState(() {
+              _sessionStartPoints[truckId] = Position(data['start_lng'], data['start_lat']);
+            });
+            if (kIsWeb) _updateWebOverlays();
+            else _updateTruckMarkersNative();
+          }
+        }
       }
     });
   }
@@ -284,11 +338,29 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   void _updateTruckMarkersNative() async {
     if (_pointAnnotationManager == null || _trucks.isEmpty || kIsWeb) return;
     try { await _pointAnnotationManager?.deleteAll(); } catch (_) {}
+    
+    // Render Trucks
     for (var truck in _trucks) {
       final double lat = (truck['latitude'] ?? 13.9402).toDouble();
       final double lng = (truck['longitude'] ?? 121.1638).toDouble();
       final String id = (truck['truck_id'] ?? truck['internal_id'] ?? "GT-001").toString();
       try { await _pointAnnotationManager?.create(PointAnnotationOptions(geometry: Point(coordinates: Position(lng, lat)), textField: id, textOffset: [0, 2], textColor: Colors.blue.toARGB32(), iconImage: "truck-15")); } catch (_) {}
+    }
+
+    // Render Start Markers for visible paths
+    for (var entry in _sessionStartPoints.entries) {
+      if (entry.value != null && _visiblePaths.contains(entry.key)) {
+        try {
+          await _pointAnnotationManager?.create(PointAnnotationOptions(
+            geometry: Point(coordinates: entry.value!),
+            textField: "START / ${entry.key}",
+            textColor: Colors.green.shade800.toARGB32(),
+            textSize: 10.0,
+            textHaloColor: Colors.white.toARGB32(),
+            textHaloWidth: 2.0,
+          ));
+        } catch (_) {}
+      }
     }
   }
 
@@ -323,6 +395,24 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
         const Icon(Icons.local_shipping, color: Colors.blue, size: 28),
       ]));
     }));
+
+    // 3. Draw Start Markers
+    _webStartPositions.forEach((truckId, offset) {
+      overlays.add(Positioned(
+        left: offset.dx - 15, top: offset.dy - 35,
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
+              child: Text("START / $truckId", style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.green))
+            ),
+            const Icon(Icons.location_on, color: Colors.green, size: 24),
+          ],
+        ),
+      ));
+    });
+
     return overlays;
   }
 
@@ -366,11 +456,11 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     double distVal = double.tryParse(truck['distance_covered']?.toString() ?? "0.0") ?? 0.0;
     String distance = "${distVal.toStringAsFixed(1)} km";
     String lastUpdate = (truck['last_update'] ?? "Just now").toString();
-    bool isHistoryVisible = kIsWeb ? _webSharedRouteData.containsKey(internalId) : _sharedRouteSubscriptions.containsKey(internalId);
+    bool isHistoryVisible = _visiblePaths.contains(internalId);
     bool isSelected = _selectedTruckId == internalId;
     Color statusColor = status == 'FULL' ? const Color(0xFFFF1744) : (status == 'ACTIVE' ? const Color(0xFF4CAF50) : const Color(0xFFFFAB00));
     return GestureDetector(
-      onTap: () => _selectTruck(internalId, (truck['latitude'] ?? 13.9402).toDouble(), (truck['longitude'] ?? 121.1638).toDouble()),
+      onTap: () => _toggleTrack(internalId, (truck['latitude'] ?? 13.9402).toDouble(), (truck['longitude'] ?? 121.1638).toDouble()),
       child: Container(
         margin: const EdgeInsets.only(bottom: 20), padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(32), boxShadow: [BoxShadow(color: isSelected ? Colors.blue.withAlpha(40) : Colors.black.withAlpha(5), blurRadius: 10, offset: const Offset(0, 4))], border: Border.all(color: isSelected ? Colors.blue : const Color(0xFFF5F5F5), width: isSelected ? 2 : 1)),
@@ -380,9 +470,59 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildInfoItem(Icons.location_on_rounded, const Color(0xFFFF1744), "Location", location), _buildInfoItem(Icons.refresh_rounded, const Color(0xFF03A9F4), "Speed", speed), _buildInfoItem(Icons.person_rounded, const Color(0xFF1976D2), "Driver", driver)]),
           const SizedBox(height: 24),
           Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStatItem(Icons.local_shipping_outlined, "DISTANCE", distance, const Color(0xFF2E7D32))])),
+          const SizedBox(height: 24),
+          Row(children: [
+            Expanded(child: ElevatedButton.icon(
+              onPressed: () => _toggleTrack(internalId, (truck['latitude'] ?? 13.9402).toDouble(), (truck['longitude'] ?? 121.1638).toDouble()),
+              icon: Icon(isSelected && _isFollowLocked ? Icons.gps_fixed : Icons.gps_not_fixed, size: 18),
+              label: Text(isSelected && _isFollowLocked ? "TRACKING" : "TRACK", style: const TextStyle(fontWeight: FontWeight.w900)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isSelected && _isFollowLocked ? const Color(0xFF1976D2) : const Color(0xFFF5F5F5),
+                foregroundColor: isSelected && _isFollowLocked ? Colors.white : Colors.black87,
+                minimumSize: const Size(0, 50),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                elevation: 0,
+              ),
+            )),
+            const SizedBox(width: 12),
+            Expanded(child: ElevatedButton.icon(
+              onPressed: () => _togglePath(internalId),
+              icon: Icon(isHistoryVisible ? Icons.visibility_off_rounded : Icons.insights_rounded, size: 18),
+              label: Text(isHistoryVisible ? "HIDE PATH" : "PATH", style: const TextStyle(fontWeight: FontWeight.w900)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isHistoryVisible ? const Color(0xFFF0F4F8) : const Color(0xFF00BFA5),
+                foregroundColor: isHistoryVisible ? Colors.black87 : Colors.white,
+                minimumSize: const Size(0, 50),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                elevation: isHistoryVisible ? 0 : 4,
+              ),
+            )),
+          ]),
         ]),
       ),
     );
+  }
+
+  void _togglePath(String truckId) {
+    if (!_visiblePaths.contains(truckId) && !_lastRoutePoints.containsKey(truckId)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("No active route available for this truck."))
+      );
+      return;
+    }
+
+    setState(() {
+      if (_visiblePaths.contains(truckId)) {
+        _visiblePaths.remove(truckId);
+        _clearSharedRoute(truckId);
+      } else {
+        _visiblePaths.add(truckId);
+        if (_lastRoutePoints.containsKey(truckId)) {
+          if (!kIsWeb) _updateSharedRoutePolyline(truckId, _lastRoutePoints[truckId]!);
+          else _updateWebSharedRoute(truckId, _lastRoutePoints[truckId]!);
+        }
+      }
+    });
   }
 
   Widget _buildInfoItem(IconData icon, Color color, String label, String value) {

@@ -148,11 +148,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
         final String today = DateFormat('yyyy-MM-dd').format(DateTime.now());
         data.forEach((key, value) {
           if (value != null && value is Map) {
-            final String? routeDate = value['date']?.toString();
-            if (routeDate == today) {
-              total++;
-              if (value['route_status'] == 'COMPLETED' || value['status'] == 'COMPLETED') completed++;
-            }
+            total++;
+            if (value['route_status'] == 'COMPLETED' || value['status'] == 'COMPLETED') completed++;
           }
         });
         if (mounted) {

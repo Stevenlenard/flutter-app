@@ -123,13 +123,8 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       if (mounted) _updateLocalDriverMarker(pos);
     } catch (e) {}
 
-    _localGpsSubscription = geo.Geolocator.getPositionStream(
-      locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.bestForNavigation, distanceFilter: 0),
-    ).listen((pos) {
-      if (widget.isSimulation) return;
-      if (mounted) setState(() { _lastLocalPos = pos; });
-      _updateLocalDriverMarker(pos);
-    });
+    // Main tracking is handled by DriverDashboard tracking service
+    // This widget receives manualPosition and updates accordingly.
   }
 
   void _listenToTrucks() {

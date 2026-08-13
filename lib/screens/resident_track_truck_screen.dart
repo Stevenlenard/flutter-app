@@ -28,6 +28,7 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   
   final Map<String, StreamSubscription> _routeSubscriptions = {};
   final Map<String, Position?> _sessionStartPoints = {}; 
+  final Map<String, List<Map>> _lastRoutePoints = {}; // Cache for toggle
 
   bool _managersReady = false;
   bool _truckLayersCreated = false;
@@ -141,7 +142,12 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
         final List<Map> points = [];
         data.forEach((key, value) => points.add(value as Map));
         points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
-        _updateRoutePolyline(truckId, points);
+        
+        _lastRoutePoints[truckId] = points;
+
+        if (_comparingTrucks.contains(truckId)) {
+          _updateRoutePolyline(truckId, points);
+        }
       }
     });
 
@@ -306,7 +312,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     }).toList();
 
     for (var entry in _sessionStartPoints.entries) {
-      if (entry.value != null) {
+      // ONLY SHOW START MARKER IF PATH IS ENABLED FOR THIS TRUCK
+      if (entry.value != null && _comparingTrucks.contains(entry.key)) {
         features.add({
           "type": "Feature",
           "geometry": {"type": "Point", "coordinates": [entry.value!.lng, entry.value!.lat]},
@@ -427,8 +434,39 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
       Row(children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(16)), child: const Icon(Icons.local_shipping_outlined, color: Color(0xFF00897B), size: 26)), const SizedBox(width: 20), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(truckId, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 19, color: Color(0xFF1A1A1A))), Text(driverName, style: const TextStyle(color: Color(0xFF757575), fontSize: 12, fontWeight: FontWeight.w500))])), Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: color.withAlpha(20), borderRadius: BorderRadius.circular(12)), child: Text(status, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w900))), const SizedBox(width: 12), Column(crossAxisAlignment: CrossAxisAlignment.end, children: [Text(eta, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A))), const Text("ETA", style: TextStyle(fontSize: 8, color: Colors.grey, fontWeight: FontWeight.w700))])]),
       const SizedBox(height: 28), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildRefinedInfo(Icons.speed_rounded, "Fleet Velocity", "${speed.toStringAsFixed(1)} km/h"), _buildRefinedInfo(Icons.location_on_outlined, "Current Area", (truck['current_purok'] ?? "Barangay Balintawak").toString())]),
       const SizedBox(height: 24), Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStatItem("Distance", "${distance.toStringAsFixed(2)}km"), Container(width: 1, height: 20, color: Colors.black12), _buildStatItem("Accuracy", "${(truck['accuracy'] ?? 0.0).toStringAsFixed(1)}m")])),
-      const SizedBox(height: 24), Row(children: [Expanded(child: _buildSecondaryButton("TRACK TRUCK", Icons.center_focus_strong_rounded, () => _focusOnTruck(truck))), const SizedBox(width: 12), Expanded(child: _buildPrimaryButton(_comparingTrucks.contains(truckId) ? "HIDE PATH" : "COMPARE PATH", Icons.insights_rounded, _comparingTrucks.contains(truckId) ? const Color(0xFFFFA726) : const Color(0xFF00BFA5), () => setState(() => _comparingTrucks.contains(truckId) ? _comparingTrucks.remove(truckId) : _comparingTrucks.add(truckId))))])
+      const SizedBox(height: 24), Row(children: [
+        Expanded(child: _buildSecondaryButton("TRACK TRUCK", Icons.center_focus_strong_rounded, () => _focusOnTruck(truck))), 
+        const SizedBox(width: 12), 
+        Expanded(child: _buildPrimaryButton(
+          _comparingTrucks.contains(truckId) ? "HIDE PATH" : "PATH", 
+          Icons.insights_rounded, 
+          _comparingTrucks.contains(truckId) ? const Color(0xFFFFA726) : const Color(0xFF00BFA5), 
+          () => _togglePath(truckId)
+        ))
+      ])
     ])));
+  }
+
+  void _togglePath(String truckId) {
+    if (!_comparingTrucks.contains(truckId) && !_lastRoutePoints.containsKey(truckId)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("No active route available for this truck."))
+      );
+      return;
+    }
+
+    setState(() {
+      if (_comparingTrucks.contains(truckId)) {
+        _comparingTrucks.remove(truckId);
+        _clearTruckRoute(truckId);
+      } else {
+        _comparingTrucks.add(truckId);
+        if (_lastRoutePoints.containsKey(truckId)) {
+          _updateRoutePolyline(truckId, _lastRoutePoints[truckId]!);
+        }
+      }
+      _updateTruckMarkers();
+    });
   }
 
   Widget _buildRefinedInfo(IconData icon, String label, String val) {

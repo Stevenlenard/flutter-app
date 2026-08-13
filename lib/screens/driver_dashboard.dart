@@ -93,7 +93,29 @@ class _DriverDashboardState extends State<DriverDashboard> {
     if (_user != null) {
       if (mounted) setState(() {});
       _setupListeners();
-      _startTripSession(); 
+      
+      // Check if there's already an active session in truck_locations
+      final truckId = _user?.preferredTruck ?? "GT-001";
+      final snapshot = await _database.ref('truck_locations/$truckId/current_session').get();
+      
+      if (snapshot.exists && snapshot.value != null) {
+        _sessionId = snapshot.value.toString();
+        debugPrint("[SESSION] Resuming existing session: $_sessionId");
+        _setupPurokListener();
+        _setupRoutePointsListener();
+        _startTracking();
+        _startIdleDetection();
+        
+        // Ensure we are marked as Online/Active when returning to dashboard
+        _database.ref('truck_locations').child(truckId).update({
+          'isOnline': true,
+          'status': 'ACTIVE',
+          'lastSeen': ServerValue.timestamp,
+        });
+      } else {
+        debugPrint("[SESSION] No active session found. Starting new trip...");
+        _startTripSession(); 
+      }
     }
   }
 
@@ -122,6 +144,26 @@ class _DriverDashboardState extends State<DriverDashboard> {
           if (v['isRead'] == false && v['truck_id'] == _user?.preferredTruck) unread++;
         });
         if (mounted) setState(() => _unreadNotifications = unread);
+      }
+    });
+
+    // --- NEW: CONNECTION RECOVERY LOGIC ---
+    _database.ref('.info/connected').onValue.listen((event) {
+      final bool isConnected = event.snapshot.value == true;
+      if (isConnected && _sessionId != null && _user != null) {
+        debugPrint("[CONNECTION] Reconnected. Restoring active status...");
+        // If we have an active session, ensure we are ACTIVE and Online
+        _database.ref('truck_locations').child(_user?.preferredTruck ?? "GT-001").update({
+           'isOnline': true,
+           'status': (_status.contains("LOST") || _status == "OFFLINE") ? "ACTIVE" : _status,
+           'updatedAt': DateTime.now().toIso8601String(),
+        });
+        if (mounted) setState(() {
+           if (_status.contains("LOST") || _status == "OFFLINE") _status = "ACTIVE";
+        });
+      } else if (!isConnected && _status != "OFFLINE") {
+        debugPrint("[CONNECTION] Lost. Setting local status to IDLE.");
+        if (mounted) setState(() => _status = "IDLE (LOST)");
       }
     });
   }
@@ -273,7 +315,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation, 
-        distanceFilter: 0,
+        distanceFilter: 0, // 0 for max sensitivity during tests
       ),
     ).listen((pos) => _processNewPosition(pos));
   }
@@ -321,6 +363,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
         if (movedSignificantly) {
           _distance += traveled;
           _currentPosition = pos;
+          debugPrint("[GPS] MOVED: ${pos.latitude}, ${pos.longitude} | Dist: ${traveled.toStringAsFixed(4)} km");
+        } else {
+          debugPrint("[GPS] Stationary Jitter Filtered: Accuracy ${pos.accuracy.toStringAsFixed(1)}m");
         }
         
         // Auto-status logic (Only if not overridden)
@@ -633,7 +678,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   focusTruckId: _user?.preferredTruck ?? "GT-001", 
                   onBack: () => setState(() => _selectedIndex = 0),
                   isSimulation: _isSimulationMode,
-                  manualPosition: _isSimulationMode ? _currentPosition : null,
+                  manualPosition: _currentPosition, // ALWAYS pass current position from the main tracking service
                 ),
                 DriverSettingsScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0), currentSessionId: _sessionId),
               ],
@@ -856,7 +901,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
           currentSessionId: _sessionId, 
           focusTruckId: _user?.preferredTruck ?? "GT-001",
           isSimulation: _isSimulationMode,
-          manualPosition: _isSimulationMode ? _currentPosition : null,
+          manualPosition: _currentPosition, // Pass current position for real-time dashboard tracking
         )
       ),
     );
