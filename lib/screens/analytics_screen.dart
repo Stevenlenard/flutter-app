@@ -86,83 +86,58 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        bool isMobile = constraints.maxWidth < 900;
+    return LayoutBuilder(builder: (context, constraints) {
+      bool isDesktop = constraints.maxWidth >= 1024;
+      bool isMobile = constraints.maxWidth < 600;
 
-        return Scaffold(
-          backgroundColor: const Color(0xFFF0F2F5),
-          body: SafeArea(
-            child: Column(
-              children: [
-                _buildHeader(isMobile),
-                _buildFilterBar(),
-                Expanded(
-                  child: SingleChildScrollView(
-                    physics: const BouncingScrollPhysics(),
-                    padding: EdgeInsets.symmetric(horizontal: isMobile ? 16 : 24, vertical: 24),
-                    child: Center(
-                      child: Container(
-                        constraints: const BoxConstraints(maxWidth: 1200),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text("Viewing Dashboard: $_selectedArea", style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Color(0xFF2C3E50))),
-                            const SizedBox(height: 24),
+      return Scaffold(
+        backgroundColor: const Color(0xFFF0F2F5),
+        appBar: widget.isEmbedded ? null : AppBar(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          title: const Text("Analytics Overview", style: TextStyle(color: Color(0xFF1A1A1A), fontWeight: FontWeight.w900)),
+          leading: widget.onBack != null ? IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.black, size: 20), onPressed: widget.onBack) : null,
+          centerTitle: true,
+        ),
+        body: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Summary Metrics Row
+              Row(
+                children: [
+                  Expanded(child: _buildMetricCard("Routes Done", "$_completedRoutes/$_totalRoutes", Icons.local_shipping_rounded, const Color(0xFF4CAF50))),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildMetricCard("Coverage", "${_coveragePercent.toInt()}%", Icons.map_rounded, const Color(0xFF2196F3))),
+                ],
+              ),
+              const SizedBox(height: 32),
 
-                            // Summary Metric Cards
-                            _buildMetricGrid(isMobile),
-                            const SizedBox(height: 24),
-
-                            if (isMobile) ...[
-                              _buildChartSection("Truck Status Distribution", _buildTruckDonutChart()),
-                              const SizedBox(height: 24),
-                              _buildChartSection("Complaints Overview", _buildComplaintsDonutChart()),
-                              const SizedBox(height: 24),
-                              _buildPurokChartSection(),
-                              const SizedBox(height: 24),
-                              _buildInsightsSection(isMobile),
-                            ] else ...[
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    flex: 3,
-                                    child: Column(
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Expanded(child: _buildChartSection("Fleet Status", _buildTruckDonutChart())),
-                                            const SizedBox(width: 24),
-                                            Expanded(child: _buildChartSection("Complaints Ratio", _buildComplaintsDonutChart())),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 24),
-                                        _buildPurokChartSection(),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 24),
-                                  Expanded(
-                                    flex: 2,
-                                    child: _buildInsightsSection(isMobile),
-                                  ),
-                                ],
-                              ),
-                            ],
-                            const SizedBox(height: 100),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+              // Charts Layout
+              if (isDesktop) 
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 1, child: _buildChartSection("Truck Status Distribution", _buildTruckDonutChart())),
+                    const SizedBox(width: 24),
+                    Expanded(flex: 1, child: _buildChartSection("Purok Visit Frequency", _buildPurokBarChart())),
+                  ],
+                )
+              else 
+                Column(
+                  children: [
+                    _buildChartSection("Truck Status Distribution", _buildTruckDonutChart()),
+                    _buildChartSection("Purok Visit Frequency", _buildPurokBarChart()),
+                  ],
                 ),
-              ],
-            ),
+              const SizedBox(height: 100),
+            ],
           ),
-        );
-      },
-    );
+        ),
+      );
+    });
   }
 
   Widget _buildMetricGrid(bool isMobile) {
@@ -291,18 +266,23 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
   Widget _buildChartSection(String title, Widget chart) {
     return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 24),
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: Colors.black.withAlpha(5), blurRadius: 15, offset: const Offset(0, 5))],
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 15, offset: const Offset(0, 8))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF2C3E50))),
-          const SizedBox(height: 24),
-          AspectRatio(aspectRatio: 1.5, child: chart),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: Color(0xFF2C3E50))),
+          const SizedBox(height: 32),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 250),
+            child: chart,
+          ),
         ],
       ),
     );

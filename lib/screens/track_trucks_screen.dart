@@ -24,7 +24,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   MapboxMap? mapboxMap;
   List<Map<dynamic, dynamic>> _trucks = [];
   String? _selectedTruckId;
-  bool _isFollowLocked = false; // New
+  String? _followedTruckId;
 
   PointAnnotationManager? _pointAnnotationManager;
   PolylineAnnotationManager? _polylineAnnotationManager;
@@ -34,20 +34,16 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   final Map<String, List<PointAnnotation>> _sharedSpecialAnnotations = {};
 
   Map<String, Offset> _webMarkerPositions = {};
-  Map<String, List<Map<String, dynamic>>> _webHeatmapData = {}; 
-  Map<String, List<Offset>> _webHeatmapPixels = {}; 
-  Map<String, List<Offset>> _webOptimizedPixels = {};
-  
-  // NEW: Web shared route pixels for web painter
   Map<String, List<Map<String, dynamic>>> _webSharedRouteData = {}; 
   Map<String, List<Offset>> _webSharedRoutePixels = {}; 
-  Map<String, Offset> _webStartPositions = {};
+  Map<String, Offset> _webStartPositions = {}; // NEW
   final Map<String, List<Map>> _lastRoutePoints = {}; 
   final Set<String> _visiblePaths = {};
   final Map<String, Position?> _sessionStartPoints = {};
 
-  final Map<String, List<PolylineAnnotation>> _truckHeatmapPaths = {};
-  final Map<String, PolylineAnnotation> _truckOptimizedPaths = {};
+  final Map<String, List<Map<String, dynamic>>> _webHeatmapData = {}; 
+  Map<String, List<Offset>> _webHeatmapPixels = {}; 
+  Map<String, List<Offset>> _webOptimizedPixels = {};
 
   @override
   void initState() {
@@ -77,9 +73,9 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
           if (kIsWeb) _updateWebOverlays();
           else _updateTruckMarkersNative();
 
-          // Auto-follow logic for Admin
-          if (_isFollowLocked && _selectedTruckId != null) {
-            final t = list.firstWhere((element) => element['internal_id'] == _selectedTruckId || element['truck_id'] == _selectedTruckId, orElse: () => {});
+          // Auto-follow logic
+          if (_followedTruckId != null) {
+            final t = list.firstWhere((element) => element['internal_id'] == _followedTruckId || element['truck_id'] == _followedTruckId, orElse: () => {});
             if (t.isNotEmpty) {
               final double lat = (t['latitude'] ?? 0.0).toDouble();
               final double lng = (t['longitude'] ?? 0.0).toDouble();
@@ -108,7 +104,6 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   void _onMapCreated(MapboxMap map) { mapboxMap = map; }
 
   void _onStyleLoaded(dynamic data) async {
-    // Reset flags
     _pointAnnotationManager = await mapboxMap?.annotations.createPointAnnotationManager();
     _polylineAnnotationManager = await mapboxMap?.annotations.createPolylineAnnotationManager();
     if (!kIsWeb) _updateTruckMarkersNative();
@@ -182,21 +177,24 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   }
 
   void _selectTruck(String truckId, double lat, double lng) {
-    setState(() { _selectedTruckId = truckId; });
+    setState(() { 
+      _selectedTruckId = truckId; 
+      _followedTruckId = truckId;
+    });
     mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat)), zoom: 16.0));
     if (kIsWeb) Future.delayed(const Duration(milliseconds: 100), _updateWebOverlays);
   }
 
   void _toggleTrack(String truckId, double lat, double lng) {
     setState(() {
-      if (_selectedTruckId == truckId) {
-        _isFollowLocked = !_isFollowLocked;
+      if (_followedTruckId == truckId) {
+        _followedTruckId = null;
       } else {
         _selectedTruckId = truckId;
-        _isFollowLocked = true;
+        _followedTruckId = truckId;
       }
     });
-    if (_isFollowLocked) {
+    if (_followedTruckId != null) {
       mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat)), zoom: 16.0));
       if (kIsWeb) Future.delayed(const Duration(milliseconds: 100), _updateWebOverlays);
     }
@@ -209,7 +207,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
         final Map data = event.snapshot.value as Map;
         final List<Map> points = [];
         data.forEach((key, value) => points.add(value as Map));
-        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
+        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
         
         _lastRoutePoints[truckId] = points;
         
@@ -234,10 +232,6 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
         }
       }
     });
-  }
-
-  void _updateAdminSpecialMarkers(String truckId, Map data) async {
-    // Admin Start/Finish point markers could be added here
   }
 
   void _clearSharedRoute(String truckId) async {
@@ -268,6 +262,10 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
 
   void _updateSharedRoutePolyline(String truckId, List<Map> points) async {
     if (mapboxMap == null || points.length < 2) return;
+
+    // 1. Sort strictly to prevent detached segments
+    points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
+
     final String sourceId = "admin-route-source-$truckId";
     final List<Map<String, dynamic>> segments = [];
     List<List<double>> currentSegmentCoords = [];
@@ -280,9 +278,17 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
       final lng = (p['lng'] ?? 0.0).toDouble();
       final lat = (p['lat'] ?? 0.0).toDouble();
       final timestamp = (p['timestamp'] ?? 0) as int;
-      bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
+      
+      if (i == 0) {
+        currentSegmentCoords.add([lng, lat]);
+        currentColor = color;
+        lastTimestamp = timestamp;
+        continue;
+      }
 
-      if (isGap || color != currentColor) {
+      bool isGap = (timestamp - lastTimestamp) > 60000;
+
+      if (isGap) {
         if (currentSegmentCoords.length >= 2) {
           segments.add({
             "type": "Feature",
@@ -290,10 +296,20 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
             "properties": {"color": currentColor, "isGap": false}
           });
         }
-        if (isGap && currentSegmentCoords.isNotEmpty) {
-           // We do NOT add a segment for gaps anymore to avoid fake shortcuts
-           debugPrint("[ADMIN MAP] Skipping GPS Gap in route.");
+        currentSegmentCoords = [[lng, lat]];
+        currentColor = color;
+      } else if (color != currentColor) {
+        // EDGE-BASED SHARED BOUNDARY LOGIC
+        // Add this point to OLD color segment
+        currentSegmentCoords.add([lng, lat]);
+        if (currentSegmentCoords.length >= 2) {
+          segments.add({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)},
+            "properties": {"color": currentColor, "isGap": false}
+          });
         }
+        // Start NEW segment with SAME point
         currentSegmentCoords = [[lng, lat]];
         currentColor = color;
       } else {
@@ -319,15 +335,16 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
           id: "admin-route-layer-$truckId",
           sourceId: sourceId,
           lineColor: Colors.green.toARGB32(),
-          lineWidth: 6.0, lineOpacity: 0.7, lineCap: LineCap.ROUND, lineJoin: LineJoin.ROUND,
+          lineWidth: 6.0, lineOpacity: 0.9, lineCap: LineCap.ROUND, lineJoin: LineJoin.ROUND,
         ));
         await style.setStyleLayerProperty("admin-route-layer-$truckId", "line-color", [
           "match", ["get", "color"], 
-          "YELLOW", Colors.yellow.toARGB32(), 
-          "MAGENTA", Colors.pinkAccent.toARGB32(), 
-          "GRAY", Colors.grey.toARGB32(), 
-          "BLUE", Colors.blue.toARGB32(), 
-          Colors.green.toARGB32()
+          "GREEN", "#00FF00",
+          "YELLOW", "#FFFF00", 
+          "PINK", "#FF1493", 
+          "BLACK", "#000000",
+          "BLUE", "#0000FF", 
+          "#00FF00"
         ]);
       } else {
         await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
@@ -339,7 +356,6 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     if (_pointAnnotationManager == null || _trucks.isEmpty || kIsWeb) return;
     try { await _pointAnnotationManager?.deleteAll(); } catch (_) {}
     
-    // Render Trucks
     for (var truck in _trucks) {
       final double lat = (truck['latitude'] ?? 13.9402).toDouble();
       final double lng = (truck['longitude'] ?? 121.1638).toDouble();
@@ -347,7 +363,6 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
       try { await _pointAnnotationManager?.create(PointAnnotationOptions(geometry: Point(coordinates: Position(lng, lat)), textField: id, textOffset: [0, 2], textColor: Colors.blue.toARGB32(), iconImage: "truck-15")); } catch (_) {}
     }
 
-    // Render Start Markers for visible paths
     for (var entry in _sessionStartPoints.entries) {
       if (entry.value != null && _visiblePaths.contains(entry.key)) {
         try {
@@ -396,23 +411,12 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
       ]));
     }));
 
-    // 3. Draw Start Markers
     _webStartPositions.forEach((truckId, offset) {
-      overlays.add(Positioned(
-        left: offset.dx - 15, top: offset.dy - 35,
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
-              child: Text("START / $truckId", style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.green))
-            ),
-            const Icon(Icons.location_on, color: Colors.green, size: 24),
-          ],
-        ),
-      ));
+      overlays.add(Positioned(left: offset.dx - 15, top: offset.dy - 35, child: Column(children: [
+        Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]), child: Text("START / $truckId", style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.green))),
+        const Icon(Icons.location_on, color: Colors.green, size: 24),
+      ])));
     });
-
     return overlays;
   }
 
@@ -472,35 +476,30 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
           Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFFF8F9FA), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStatItem(Icons.local_shipping_outlined, "DISTANCE", distance, const Color(0xFF2E7D32))])),
           const SizedBox(height: 24),
           Row(children: [
-            Expanded(child: ElevatedButton.icon(
-              onPressed: () => _toggleTrack(internalId, (truck['latitude'] ?? 13.9402).toDouble(), (truck['longitude'] ?? 121.1638).toDouble()),
-              icon: Icon(isSelected && _isFollowLocked ? Icons.gps_fixed : Icons.gps_not_fixed, size: 18),
-              label: Text(isSelected && _isFollowLocked ? "TRACKING" : "TRACK", style: const TextStyle(fontWeight: FontWeight.w900)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: isSelected && _isFollowLocked ? const Color(0xFF1976D2) : const Color(0xFFF5F5F5),
-                foregroundColor: isSelected && _isFollowLocked ? Colors.white : Colors.black87,
-                minimumSize: const Size(0, 50),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                elevation: 0,
-              ),
+            Expanded(child: _buildSecondaryButton(
+              _followedTruckId == internalId ? "TRACKING" : "TRACK TRUCK", 
+              _followedTruckId == internalId ? Icons.gps_fixed : Icons.center_focus_strong_rounded, 
+              () => _toggleTrack(internalId, (truck['latitude'] ?? 13.9402).toDouble(), (truck['longitude'] ?? 121.1638).toDouble())
             )),
             const SizedBox(width: 12),
-            Expanded(child: ElevatedButton.icon(
-              onPressed: () => _togglePath(internalId),
-              icon: Icon(isHistoryVisible ? Icons.visibility_off_rounded : Icons.insights_rounded, size: 18),
-              label: Text(isHistoryVisible ? "HIDE PATH" : "PATH", style: const TextStyle(fontWeight: FontWeight.w900)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: isHistoryVisible ? const Color(0xFFF0F4F8) : const Color(0xFF00BFA5),
-                foregroundColor: isHistoryVisible ? Colors.black87 : Colors.white,
-                minimumSize: const Size(0, 50),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                elevation: isHistoryVisible ? 0 : 4,
-              ),
-            )),
+            Expanded(child: _buildPrimaryButton(
+              isHistoryVisible ? "HIDE PATH" : "PATH", 
+              Icons.insights_rounded, 
+              isHistoryVisible ? const Color(0xFFFFA726) : const Color(0xFF00BFA5), 
+              () => _togglePath(internalId)
+            ))
           ]),
         ]),
       ),
     );
+  }
+
+  Widget _buildSecondaryButton(String label, IconData icon, VoidCallback onTap) {
+    return ElevatedButton.icon(onPressed: onTap, icon: Icon(icon, size: 16), label: Text(label, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12)), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF5F5F5), foregroundColor: const Color(0xFF1A1A1A), elevation: 0, padding: const EdgeInsets.symmetric(vertical: 18), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))));
+  }
+
+  Widget _buildPrimaryButton(String label, IconData icon, Color color, VoidCallback onTap) {
+    return ElevatedButton.icon(onPressed: onTap, icon: Icon(icon, size: 16), label: Text(label, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12)), style: ElevatedButton.styleFrom(backgroundColor: color, foregroundColor: Colors.white, elevation: 6, shadowColor: color.withAlpha(100), padding: const EdgeInsets.symmetric(vertical: 18), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))));
   }
 
   void _togglePath(String truckId) {
@@ -570,7 +569,8 @@ class WebPathPainter extends CustomPainter {
         final String colorName = (data[i + 1]['color'] ?? 'GREEN').toString().toUpperCase();
         Color color = Colors.green;
         if (colorName == "YELLOW") color = Colors.yellow;
-        if (colorName == "MAGENTA") color = Colors.pinkAccent;
+        if (colorName == "PINK") color = Colors.pinkAccent;
+        if (colorName == "BLACK") color = Colors.black;
         if (colorName == "GRAY") color = Colors.grey;
         if (colorName == "BLUE") color = Colors.blue;
         final paint = Paint()..strokeWidth = 8.0..strokeCap = StrokeCap.round..style = PaintingStyle.stroke..color = color.withOpacity(0.8);

@@ -179,10 +179,10 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _updateSpecialMarkers(Map data) async {
     if (_pointAnnotationManager == null) return;
     if (data['start_lat'] != null && data['start_lng'] != null) {
-      _addMarkerIfMissing("SESSION_START", Position(data['start_lng'], data['start_lat']), "START", Colors.green);
+      _addMarkerIfMissing("SESSION_START", Position(data['start_lng'], data['start_lat']), "START", Colors.blue);
     }
     if (data['finish_lat'] != null && data['finish_lng'] != null) {
-      _addMarkerIfMissing("SESSION_FINISH", Position(data['finish_lng'], data['finish_lat']), "🏁 FINISH", Colors.blue);
+      _addMarkerIfMissing("SESSION_FINISH", Position(data['finish_lng'], data['finish_lat']), "🏁 FINISH", Colors.black);
     }
   }
 
@@ -288,6 +288,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           "match", ["get", "status"],
           "IDLE", Colors.yellow.toARGB32(),
           "FULL", Colors.pinkAccent.toARGB32(),
+          "FINISHED", Colors.black.toARGB32(),
           Colors.green.toARGB32() // ACTIVE
         ];
 
@@ -329,34 +330,85 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
 
   void _updateRoutePolyline(List<Map> points) async {
     if (mapboxMap == null || points.length < 2) { if (points.isEmpty) _clearRoute(); return; }
+    
+    // 1. Numerical sort by timestamp
+    points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
+
     final String sourceId = "driver-route-source";
     final List<Map<String, dynamic>> segments = [];
-    List<List<double>> currentSegmentCoords = [];
-    String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
-    int lastTimestamp = (points.first['timestamp'] ?? 0) as int;
-    for (var i = 0; i < points.length; i++) {
-      final p = points[i]; final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
-      final lng = (p['lng'] ?? 0.0).toDouble(); final lat = (p['lat'] ?? 0.0).toDouble();
-      final timestamp = (p['timestamp'] ?? 0) as int;
-      bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
-      if (isGap || color != currentColor) {
-        if (currentSegmentCoords.length >= 2) segments.add({"type": "Feature", "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)}, "properties": {"color": currentColor, "isGap": false}});
-        // Removed dashed yellow gap segment to prevent fake straight lines
-        currentSegmentCoords = [[lng, lat]]; currentColor = color;
-      } else { currentSegmentCoords.add([lng, lat]); }
-      lastTimestamp = timestamp;
+    
+    // EDGE-BASED SEGMENTATION
+    for (int i = 1; i < points.length; i++) {
+      final prev = points[i - 1];
+      final curr = points[i];
+      
+      final double prevLng = (prev['lng'] ?? 0.0).toDouble();
+      final double prevLat = (prev['lat'] ?? 0.0).toDouble();
+      final double currLng = (curr['lng'] ?? 0.0).toDouble();
+      final double currLat = (curr['lat'] ?? 0.0).toDouble();
+      final int prevTs = (prev['timestamp'] ?? 0) as int;
+      final int currTs = (curr['timestamp'] ?? 0) as int;
+      
+      // Determine color from DESTINATION point status
+      final String color = (curr['color'] ?? 'GREEN').toString().toUpperCase();
+      
+      // Use standard GAP logic (60s)
+      bool isGap = (currTs - prevTs) > 60000;
+
+      if (!isGap) {
+        // Find existing segment of the same color to append to, or start new
+        Map<String, dynamic>? lastSegment;
+        if (segments.isNotEmpty && segments.last['properties']['color'] == color) {
+          lastSegment = segments.last;
+        }
+
+        if (lastSegment != null) {
+          List coords = lastSegment['geometry']['coordinates'];
+          coords.add([currLng, currLat]);
+        } else {
+          segments.add({
+            "type": "Feature",
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [prevLng, prevLat],
+                [currLng, currLat]
+              ]
+            },
+            "properties": {"color": color, "isGap": false}
+          });
+        }
+      }
     }
-    if (currentSegmentCoords.length >= 2) segments.add({"type": "Feature", "geometry": {"type": "LineString", "coordinates": currentSegmentCoords}, "properties": {"color": currentColor, "isGap": false}});
+
     final featureCollection = {"type": "FeatureCollection", "features": segments};
+    
     try {
       final style = mapboxMap!.style;
       if (!_routeSourceCreated) {
         await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
-        await style.addLayer(LineLayer(id: "driver-route-layer", sourceId: sourceId, lineColor: Colors.green.toARGB32(), lineWidth: 8.0, lineOpacity: 0.8, lineCap: LineCap.ROUND, lineJoin: LineJoin.ROUND));
-        await style.setStyleLayerProperty("driver-route-layer", "line-color", ["match", ["get", "color"], "YELLOW", Colors.yellow.toARGB32(), "MAGENTA", Colors.pinkAccent.toARGB32(), "GRAY", Colors.grey.toARGB32(), "BLUE", Colors.blue.toARGB32(), Colors.green.toARGB32()]);
-        await style.addLayer(LineLayer(id: "driver-route-gap-layer", sourceId: sourceId, filter: ["==", ["get", "isGap"], true], lineColor: Colors.yellow.toARGB32(), lineWidth: 3.0, lineOpacity: 0.5, lineDasharray: [2.0, 2.0]));
+        await style.addLayer(LineLayer(
+          id: "driver-route-layer", 
+          sourceId: sourceId, 
+          lineColor: Colors.green.toARGB32(), 
+          lineWidth: 10.0, 
+          lineOpacity: 1.0, 
+          lineCap: LineCap.ROUND, 
+          lineJoin: LineJoin.ROUND
+        ));
+        await style.setStyleLayerProperty("driver-route-layer", "line-color", [
+          "match", ["get", "color"],
+          "GREEN", "#00FF00",
+          "YELLOW", "#FFFF00",
+          "PINK", "#FF1493",
+          "BLACK", "#000000",
+          "BLUE", "#0000FF",
+          "#00FF00"
+        ]);
         if (mounted) setState(() => _routeSourceCreated = true);
-      } else { await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection)); }
+      } else { 
+        await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection)); 
+      }
     } catch (e) {}
   }
 
@@ -431,6 +483,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
                   _buildLegendItem(Colors.green, "Active / Normal"),
                   _buildLegendItem(Colors.yellow, "Idle / Signal Issue"),
                   _buildLegendItem(Colors.pinkAccent, "Truck Full"),
+                  _buildLegendItem(Colors.black, "Finish"),
                   _buildLegendItem(Colors.blue, "Start Point"),
                 ],
               ),

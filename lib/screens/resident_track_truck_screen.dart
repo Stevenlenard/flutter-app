@@ -181,45 +181,43 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
 
   void _updateRoutePolyline(String truckId, List<Map> points) async {
     if (mapboxMap == null || points.length < 2) return;
+    
+    // 1. Numerical sort
+    points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
+
     final String sourceId = "route-source-$truckId";
     final List<Map<String, dynamic>> segments = [];
-    List<List<double>> currentSegmentCoords = [];
-    String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
-    int lastTimestamp = (points.first['timestamp'] ?? 0) as int;
 
-    for (var i = 0; i < points.length; i++) {
-      final p = points[i];
-      final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
-      final lng = (p['lng'] ?? 0.0).toDouble();
-      final lat = (p['lat'] ?? 0.0).toDouble();
-      final timestamp = (p['timestamp'] ?? 0) as int;
-      bool isGap = i > 0 && (timestamp - lastTimestamp) > 45000;
+    // EDGE-BASED SEGMENTATION
+    for (int i = 1; i < points.length; i++) {
+      final prev = points[i - 1];
+      final curr = points[i];
+      
+      final String color = (curr['color'] ?? 'GREEN').toString().toUpperCase();
+      final bool isGap = ((curr['timestamp'] ?? 0) as int) - ((prev['timestamp'] ?? 0) as int) > 60000;
 
-      if (isGap || color != currentColor) {
-        if (currentSegmentCoords.length >= 2) {
+      if (!isGap) {
+        Map<String, dynamic>? lastSegment;
+        if (segments.isNotEmpty && segments.last['properties']['color'] == color) {
+          lastSegment = segments.last;
+        }
+
+        if (lastSegment != null) {
+          lastSegment['geometry']['coordinates'].add([(curr['lng'] ?? 0.0).toDouble(), (curr['lat'] ?? 0.0).toDouble()]);
+        } else {
           segments.add({
             "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)},
-            "properties": {"color": currentColor, "isGap": false}
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [(prev['lng'] ?? 0.0).toDouble(), (prev['lat'] ?? 0.0).toDouble()],
+                [(curr['lng'] ?? 0.0).toDouble(), (curr['lat'] ?? 0.0).toDouble()]
+              ]
+            },
+            "properties": {"color": color, "isGap": false}
           });
         }
-        if (isGap && currentSegmentCoords.isNotEmpty) {
-           // Skip gap segments to prevent fake teleport lines
-           debugPrint("[RESIDENT MAP] Skipping GPS Gap in route.");
-        }
-        currentSegmentCoords = [[lng, lat]];
-        currentColor = color;
-      } else {
-        currentSegmentCoords.add([lng, lat]);
       }
-      lastTimestamp = timestamp;
-    }
-    if (currentSegmentCoords.length >= 2) {
-      segments.add({
-        "type": "Feature",
-        "geometry": {"type": "LineString", "coordinates": currentSegmentCoords},
-        "properties": {"color": currentColor, "isGap": false}
-      });
     }
 
     final featureCollection = {"type": "FeatureCollection", "features": segments};
@@ -232,29 +230,21 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
           id: "route-layer-$truckId",
           sourceId: sourceId,
           lineColor: Colors.green.toARGB32(),
-          lineWidth: 6.0,
-          lineOpacity: 0.7,
+          lineWidth: 8.0,
+          lineOpacity: 0.9,
           lineCap: LineCap.ROUND,
           lineJoin: LineJoin.ROUND,
         ));
         
         await style.setStyleLayerProperty("route-layer-$truckId", "line-color", [
           "match", ["get", "color"],
-          "YELLOW", Colors.yellow.toARGB32(),
-          "MAGENTA", Colors.pinkAccent.toARGB32(),
-          "GRAY", Colors.grey.toARGB32(),
-          "BLUE", Colors.blue.toARGB32(),
-          Colors.green.toARGB32()
+          "GREEN", "#00FF00",
+          "YELLOW", "#FFFF00",
+          "PINK", "#FF1493",
+          "BLACK", "#000000",
+          "BLUE", "#0000FF",
+          "#00FF00"
         ]);
-        await style.addLayer(LineLayer(
-          id: "route-gap-layer-$truckId",
-          sourceId: sourceId,
-          filter: ["==", ["get", "isGap"], true],
-          lineColor: Colors.yellow.toARGB32(),
-          lineWidth: 2.0,
-          lineOpacity: 0.5,
-          lineDasharray: [2.0, 2.0],
-        ));
       } else {
         await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection));
       }

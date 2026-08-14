@@ -386,10 +386,10 @@ class _DriverDashboardState extends State<DriverDashboard> {
     }
 
     // Determine Status for this specific point (respecting override)
-    String effectiveStatus = _status;
-    if (_testStatusOverride != "AUTO") {
-      effectiveStatus = _testStatusOverride.replaceFirst("FORCE ", "");
-    }
+    String effectiveStatus = _getEffectiveRouteStatus();
+    String trailColor = _getTrailColorForStatus(effectiveStatus);
+
+    debugPrint("[ROUTE DEBUG] Point: ${pos.latitude},${pos.longitude} | Status: $effectiveStatus | Color: $trailColor");
 
     _database.ref('truck_locations').child(truckId).update({
       'latitude': pos.latitude,
@@ -406,12 +406,27 @@ class _DriverDashboardState extends State<DriverDashboard> {
     });
 
     if (movedSignificantly) {
-      String trailColor = "GREEN"; 
-      if (effectiveStatus == "IDLE") trailColor = "YELLOW";
-      if (effectiveStatus == "FULL") trailColor = "MAGENTA";
-      if (effectiveStatus == "FINISHED") trailColor = "GRAY";
-
       _appendRoutePoint(pos, effectiveStatus, trailColor);
+    }
+  }
+
+  String _getEffectiveRouteStatus() {
+    if (_testStatusOverride != "AUTO") {
+      return _testStatusOverride.replaceFirst("FORCE ", "");
+    }
+    // Normalize status for route points
+    if (_status.contains("IDLE")) return "IDLE";
+    if (_status.contains("FULL")) return "FULL";
+    if (_status.contains("FINISHED")) return "FINISHED";
+    return "ACTIVE";
+  }
+
+  String _getTrailColorForStatus(String status) {
+    switch (status.toUpperCase()) {
+      case "IDLE": return "YELLOW";
+      case "FULL": return "PINK";
+      case "FINISHED": return "BLACK";
+      default: return "GREEN";
     }
   }
 
@@ -510,9 +525,12 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
   void _appendRoutePoint(Position pos, String status, String color) {
     if (_sessionId == null) return;
+    // Use local timestamp for immediate consistent sorting in map views
+    final int ts = DateTime.now().millisecondsSinceEpoch;
     _database.ref('driver_routes').child(_sessionId!).child('route').push().set({
       'lat': pos.latitude, 'lng': pos.longitude, 'status': status, 'color': color,
-      'speed': pos.speed * 3.6, 'heading': pos.heading, 'accuracy': pos.accuracy, 'timestamp': ServerValue.timestamp,
+      'speed': pos.speed * 3.6, 'heading': pos.heading, 'accuracy': pos.accuracy, 
+      'timestamp': ts,
     });
   }
 
@@ -552,6 +570,12 @@ class _DriverDashboardState extends State<DriverDashboard> {
         'finish_lng': _currentPosition?.longitude,
         'final_distance': _distance,
       });
+
+      // Add final black segment point
+      if (_currentPosition != null) {
+        _appendRoutePoint(_currentPosition!, "FINISHED", "BLACK");
+      }
+
       await _database.ref('truck_locations').child(truckId).update({'status': 'finished', 'current_session': null});
       _positionSubscription?.cancel();
       if (mounted) {
@@ -718,6 +742,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text("TRIP: ${_sessionId ?? 'none'}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
+                          Text("CURRENT STATUS: $_status", style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                          Text("EFFECTIVE ROUTE STATUS: ${_getEffectiveRouteStatus()}", style: const TextStyle(color: Colors.cyanAccent, fontSize: 8, fontWeight: FontWeight.bold)),
                           if (_startDateTime != null)
                             Text("START: ${_tripRoutePoints.isNotEmpty ? _tripRoutePoints.first['lat'] : '...' }, ${_tripRoutePoints.isNotEmpty ? _tripRoutePoints.first['lng'] : '...'}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
                           Text("GPS: ${_currentPosition != null ? 'LOCKED' : 'SEARCHING'}", style: TextStyle(color: _currentPosition != null ? Colors.greenAccent : Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold)),
@@ -726,12 +752,13 @@ class _DriverDashboardState extends State<DriverDashboard> {
                             Text("LNG: ${_currentPosition!.longitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.white70, fontSize: 8)),
                             Text("ACCURACY: ${_currentPosition!.accuracy.toStringAsFixed(1)}m", style: TextStyle(color: _currentPosition!.accuracy < 20 ? Colors.greenAccent : Colors.orangeAccent, fontSize: 8)),
                           ],
+                          const SizedBox(height: 4),
                           Text("ROUTE POINTS: ${_tripRoutePoints.length}", style: const TextStyle(color: Colors.white, fontSize: 8)),
-                          Text("ACTIVE SEGMENTS: ${_tripRoutePoints.where((p) => p['status'] == 'ACTIVE').length}", style: const TextStyle(color: Colors.greenAccent, fontSize: 7)),
-                          Text("IDLE SEGMENTS: ${_tripRoutePoints.where((p) => p['status'] == 'IDLE').length}", style: const TextStyle(color: Colors.yellowAccent, fontSize: 7)),
-                          Text("FULL SEGMENTS: ${_tripRoutePoints.where((p) => p['status'] == 'FULL').length}", style: const TextStyle(color: Colors.pinkAccent, fontSize: 7)),
+                          _buildDebugCounter("ACTIVE POINTS", "ACTIVE"),
+                          _buildDebugCounter("IDLE POINTS", "IDLE"),
+                          _buildDebugCounter("FULL POINTS", "FULL"),
+                          const SizedBox(height: 4),
                           Text("DISTANCE: ${_distance.toStringAsFixed(3)} km", style: const TextStyle(color: Colors.white, fontSize: 9)),
-                          Text("STATUS: $_status", style: TextStyle(color: _buildStatusIndicatorColor(), fontSize: 8, fontWeight: FontWeight.bold)),
                           Text("MAP ROUTE: ${_sessionId != null ? 'VISIBLE' : 'HIDDEN'}", style: const TextStyle(color: Colors.white, fontSize: 8)),
                           const SizedBox(height: 8),
                           const Text("FORCE STATUS COLOR:", style: TextStyle(color: Colors.cyanAccent, fontSize: 8, fontWeight: FontWeight.bold)),
@@ -740,7 +767,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                         ],
                       ),
                     ),
-                  ]
+                  ],
                 ],
               ),
             ),
@@ -749,6 +776,15 @@ class _DriverDashboardState extends State<DriverDashboard> {
       ),
       bottomNavigationBar: _buildBottomNav(),
     );
+  }
+
+  Widget _buildDebugCounter(String label, String status) {
+    int count = _tripRoutePoints.where((p) => (p['status'] ?? '').toString().toUpperCase() == status).length;
+    Color color = Colors.white70;
+    if (status == "ACTIVE") color = Colors.greenAccent;
+    if (status == "IDLE") color = Colors.yellowAccent;
+    if (status == "FULL") color = Colors.pinkAccent;
+    return Text("$label: $count", style: TextStyle(color: color, fontSize: 7));
   }
 
   Widget _buildResponsiveDashboard(BoxConstraints constraints) {
