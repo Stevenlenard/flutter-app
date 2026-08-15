@@ -358,19 +358,31 @@ class _DriverDashboardState extends State<DriverDashboard> {
     _lastGpsUpdateTime = DateTime.now();
     double speedKmH = (pos.speed * 3.6);
 
+    // 1. GPS NOISE FILTERING
+    bool isAccurate = pos.accuracy < 50.0; // Slightly more lenient (50m)
+    bool movedFarEnough = traveled > 0.0025; // Must move at least 2.5 meters for smoothing
+
+    // Debug raw vs accepted
+    debugPrint("[GPS MASTER] RAW: ${pos.latitude.toStringAsFixed(6)}, ${pos.longitude.toStringAsFixed(6)} | ACC: ${pos.accuracy.toStringAsFixed(1)}m | SPEED: ${speedKmH.toStringAsFixed(1)}km/h");
+
+    if (!isAccurate && !_isSimulationMode) {
+      debugPrint("[GPS REJECTED] Poor Accuracy: ${pos.accuracy.toStringAsFixed(1)}m");
+      return;
+    }
+
     if (mounted) {
       setState(() {
-        if (movedSignificantly) {
+        if (movedFarEnough || _currentPosition == null || _isSimulationMode) {
           _distance += traveled;
           _currentPosition = pos;
-          debugPrint("[GPS] MOVED: ${pos.latitude}, ${pos.longitude} | Dist: ${traveled.toStringAsFixed(4)} km");
+          debugPrint("[GPS ACCEPTED] LAT: ${pos.latitude}, LNG: ${pos.longitude} | Dist: ${traveled * 1000}m | Accuracy: ${pos.accuracy}m");
         } else {
-          debugPrint("[GPS] Stationary Jitter Filtered: Accuracy ${pos.accuracy.toStringAsFixed(1)}m");
+          debugPrint("[GPS FILTERED] Moved only ${traveled * 1000}m (Threshold: 2.5m)");
         }
         
         // Auto-status logic (Only if not overridden)
         if (_testStatusOverride == "AUTO") {
-          if (speedKmH > 1.0 && _status == "IDLE") {
+          if (speedKmH > 1.2 && _status == "IDLE") {
             _updateTripStatus("ACTIVE");
           }
         }
@@ -389,8 +401,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
     String effectiveStatus = _getEffectiveRouteStatus();
     String trailColor = _getTrailColorForStatus(effectiveStatus);
 
-    debugPrint("[ROUTE DEBUG] Point: ${pos.latitude},${pos.longitude} | Status: $effectiveStatus | Color: $trailColor");
-
     _database.ref('truck_locations').child(truckId).update({
       'latitude': pos.latitude,
       'longitude': pos.longitude,
@@ -399,13 +409,13 @@ class _DriverDashboardState extends State<DriverDashboard> {
       'avg_speed': avgSpeed,
       'heading': pos.heading,
       'accuracy': pos.accuracy,
-      'status': effectiveStatus, // Sync overridden status to Firebase
+      'status': effectiveStatus, 
       'isOnline': true,
       'lastSeen': ServerValue.timestamp,
       'updatedAt': DateTime.now().toIso8601String(),
     });
 
-    if (movedSignificantly) {
+    if (movedFarEnough || _tripRoutePoints.isEmpty || _isSimulationMode) {
       _appendRoutePoint(pos, effectiveStatus, trailColor);
     }
   }

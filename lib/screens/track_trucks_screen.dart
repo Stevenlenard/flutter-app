@@ -36,7 +36,7 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   Map<String, Offset> _webMarkerPositions = {};
   Map<String, List<Map<String, dynamic>>> _webSharedRouteData = {}; 
   Map<String, List<Offset>> _webSharedRoutePixels = {}; 
-  Map<String, Offset> _webStartPositions = {}; // NEW
+  Map<String, Offset> _webStartPositions = {};
   final Map<String, List<Map>> _lastRoutePoints = {}; 
   final Set<String> _visiblePaths = {};
   final Map<String, Position?> _sessionStartPoints = {};
@@ -128,8 +128,10 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
     Map<String, Offset> newStartPositions = {};
     for (var entry in _sessionStartPoints.entries) {
       if (entry.value != null && _visiblePaths.contains(entry.key)) {
-        final screenPos = await mapboxMap!.pixelForCoordinate(Point(coordinates: entry.value!));
-        newStartPositions[entry.key] = Offset(screenPos.x, screenPos.y);
+        try {
+          final screenPos = await mapboxMap!.pixelForCoordinate(Point(coordinates: entry.value!));
+          newStartPositions[entry.key] = Offset(screenPos.x, screenPos.y);
+        } catch (_) {}
       }
     }
 
@@ -263,66 +265,47 @@ class _TrackTrucksScreenState extends State<TrackTrucksScreen> {
   void _updateSharedRoutePolyline(String truckId, List<Map> points) async {
     if (mapboxMap == null || points.length < 2) return;
 
-    // 1. Sort strictly to prevent detached segments
+    // 1. Strict numerical sort
     points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
 
     final String sourceId = "admin-route-source-$truckId";
     final List<Map<String, dynamic>> segments = [];
-    List<List<double>> currentSegmentCoords = [];
-    String currentColor = (points.first['color'] ?? 'GREEN').toString().toUpperCase();
-    int lastTimestamp = (points.first['timestamp'] ?? 0) as int;
 
-    for (var i = 0; i < points.length; i++) {
-      final p = points[i];
-      final color = (p['color'] ?? 'GREEN').toString().toUpperCase();
-      final lng = (p['lng'] ?? 0.0).toDouble();
-      final lat = (p['lat'] ?? 0.0).toDouble();
-      final timestamp = (p['timestamp'] ?? 0) as int;
+    // EDGE-BASED SEGMENTATION: Connect points directly to avoid gaps
+    for (int i = 1; i < points.length; i++) {
+      final prev = points[i - 1];
+      final curr = points[i];
       
-      if (i == 0) {
-        currentSegmentCoords.add([lng, lat]);
-        currentColor = color;
-        lastTimestamp = timestamp;
-        continue;
-      }
+      final double prevLng = (prev['lng'] ?? 0.0).toDouble();
+      final double prevLat = (prev['lat'] ?? 0.0).toDouble();
+      final double currLng = (curr['lng'] ?? 0.0).toDouble();
+      final double currLat = (curr['lat'] ?? 0.0).toDouble();
+      final int prevTs = (prev['timestamp'] ?? 0) as int;
+      final int currTs = (curr['timestamp'] ?? 0) as int;
 
-      bool isGap = (timestamp - lastTimestamp) > 60000;
+      final String color = (curr['color'] ?? 'GREEN').toString().toUpperCase();
+      final bool isGap = (currTs - prevTs) > 60000;
 
-      if (isGap) {
-        if (currentSegmentCoords.length >= 2) {
+      if (!isGap) {
+        if (segments.isNotEmpty && segments.last['properties']['color'] == color) {
+          final List coords = segments.last['geometry']['coordinates'];
+          if (coords.isEmpty || coords.last[0] != currLng || coords.last[1] != currLat) {
+            coords.add([currLng, currLat]);
+          }
+        } else {
           segments.add({
             "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)},
-            "properties": {"color": currentColor, "isGap": false}
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [prevLng, prevLat],
+                [currLng, currLat]
+              ]
+            },
+            "properties": {"color": color, "isGap": false}
           });
         }
-        currentSegmentCoords = [[lng, lat]];
-        currentColor = color;
-      } else if (color != currentColor) {
-        // EDGE-BASED SHARED BOUNDARY LOGIC
-        // Add this point to OLD color segment
-        currentSegmentCoords.add([lng, lat]);
-        if (currentSegmentCoords.length >= 2) {
-          segments.add({
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": List.from(currentSegmentCoords)},
-            "properties": {"color": currentColor, "isGap": false}
-          });
-        }
-        // Start NEW segment with SAME point
-        currentSegmentCoords = [[lng, lat]];
-        currentColor = color;
-      } else {
-        currentSegmentCoords.add([lng, lat]);
       }
-      lastTimestamp = timestamp;
-    }
-    if (currentSegmentCoords.length >= 2) {
-      segments.add({
-        "type": "Feature",
-        "geometry": {"type": "LineString", "coordinates": currentSegmentCoords},
-        "properties": {"color": currentColor, "isGap": false}
-      });
     }
 
     final featureCollection = {"type": "FeatureCollection", "features": segments};

@@ -28,7 +28,7 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   
   final Map<String, StreamSubscription> _routeSubscriptions = {};
   final Map<String, Position?> _sessionStartPoints = {}; 
-  final Map<String, List<Map>> _lastRoutePoints = {}; // Cache for toggle
+  final Map<String, List<Map>> _lastRoutePoints = {}; 
 
   bool _managersReady = false;
   bool _truckLayersCreated = false;
@@ -141,7 +141,7 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
         final Map data = event.snapshot.value as Map;
         final List<Map> points = [];
         data.forEach((key, value) => points.add(value as Map));
-        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
+        points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
         
         _lastRoutePoints[truckId] = points;
 
@@ -182,37 +182,38 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   void _updateRoutePolyline(String truckId, List<Map> points) async {
     if (mapboxMap == null || points.length < 2) return;
     
-    // 1. Numerical sort
     points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
 
     final String sourceId = "route-source-$truckId";
     final List<Map<String, dynamic>> segments = [];
 
-    // EDGE-BASED SEGMENTATION
+    // EDGE-BASED SEGMENTATION: Connect points directly to avoid gaps
     for (int i = 1; i < points.length; i++) {
       final prev = points[i - 1];
       final curr = points[i];
       
+      final double prevLng = (prev['lng'] ?? 0.0).toDouble();
+      final double prevLat = (prev['lat'] ?? 0.0).toDouble();
+      final double currLng = (curr['lng'] ?? 0.0).toDouble();
+      final double currLat = (curr['lat'] ?? 0.0).toDouble();
+      final int prevTs = (prev['timestamp'] ?? 0) as int;
+      final int currTs = (curr['timestamp'] ?? 0) as int;
+
       final String color = (curr['color'] ?? 'GREEN').toString().toUpperCase();
-      final bool isGap = ((curr['timestamp'] ?? 0) as int) - ((prev['timestamp'] ?? 0) as int) > 60000;
+      final bool isGap = (currTs - prevTs) > 60000;
 
       if (!isGap) {
-        Map<String, dynamic>? lastSegment;
         if (segments.isNotEmpty && segments.last['properties']['color'] == color) {
-          lastSegment = segments.last;
-        }
-
-        if (lastSegment != null) {
-          lastSegment['geometry']['coordinates'].add([(curr['lng'] ?? 0.0).toDouble(), (curr['lat'] ?? 0.0).toDouble()]);
+          final List coords = segments.last['geometry']['coordinates'];
+          if (coords.isEmpty || coords.last[0] != currLng || coords.last[1] != currLat) {
+            coords.add([currLng, currLat]);
+          }
         } else {
           segments.add({
             "type": "Feature",
             "geometry": {
               "type": "LineString",
-              "coordinates": [
-                [(prev['lng'] ?? 0.0).toDouble(), (prev['lat'] ?? 0.0).toDouble()],
-                [(curr['lng'] ?? 0.0).toDouble(), (curr['lat'] ?? 0.0).toDouble()]
-              ]
+              "coordinates": [[prevLng, prevLat], [currLng, currLat]]
             },
             "properties": {"color": color, "isGap": false}
           });
@@ -302,7 +303,6 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
     }).toList();
 
     for (var entry in _sessionStartPoints.entries) {
-      // ONLY SHOW START MARKER IF PATH IS ENABLED FOR THIS TRUCK
       if (entry.value != null && _comparingTrucks.contains(entry.key)) {
         features.add({
           "type": "Feature",

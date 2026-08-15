@@ -74,18 +74,24 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void didUpdateWidget(covariant DriverTrackTruckScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     
-    if (widget.manualPosition != null && widget.manualPosition != oldWidget.manualPosition) {
-      setState(() {
-        _lastLocalPos = widget.manualPosition;
-      });
-      _updateLocalDriverMarker(widget.manualPosition!);
+    if (widget.manualPosition != null) {
+      final bool hasChanged = oldWidget.manualPosition == null || 
+                              widget.manualPosition!.latitude != oldWidget.manualPosition!.latitude ||
+                              widget.manualPosition!.longitude != oldWidget.manualPosition!.longitude;
       
-      // Auto-follow logic for simulation
-      if (_isFollowLocked && mapboxMap != null) {
-        mapboxMap?.setCamera(CameraOptions(
-          center: Point(coordinates: Position(widget.manualPosition!.longitude, widget.manualPosition!.latitude)),
-          zoom: 16.5,
-        ));
+      if (hasChanged) {
+        debugPrint("[DRIVER MAP] Manual position updated: ${widget.manualPosition!.latitude}, ${widget.manualPosition!.longitude}");
+        setState(() {
+          _lastLocalPos = widget.manualPosition;
+        });
+        _updateLocalDriverMarker(widget.manualPosition!);
+        
+        // Auto-follow logic
+        if (_isFollowLocked && mapboxMap != null) {
+          mapboxMap?.setCamera(CameraOptions(
+            center: Point(coordinates: Position(widget.manualPosition!.longitude, widget.manualPosition!.latitude)),
+          ));
+        }
       }
     }
 
@@ -123,8 +129,14 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       if (mounted) _updateLocalDriverMarker(pos);
     } catch (e) {}
 
-    // Main tracking is handled by DriverDashboard tracking service
-    // This widget receives manualPosition and updates accordingly.
+    _localGpsSubscription = geo.Geolocator.getPositionStream(
+      locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.bestForNavigation, distanceFilter: 2),
+    ).listen((pos) {
+      if (widget.manualPosition != null) return; // Prioritize manual position from dashboard
+      if (widget.isSimulation) return;
+      if (mounted) setState(() { _lastLocalPos = pos; });
+      _updateLocalDriverMarker(pos);
+    });
   }
 
   void _listenToTrucks() {
@@ -334,13 +346,34 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     // 1. Numerical sort by timestamp
     points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
 
+    // 2. Filter / Simplify points to reduce zigzagging
+    final List<Map> filteredPoints = [];
+    if (points.isNotEmpty) {
+      filteredPoints.add(points.first);
+      for (int i = 1; i < points.length; i++) {
+        final prev = filteredPoints.last;
+        final curr = points[i];
+        
+        final double dist = geo.Geolocator.distanceBetween(
+          (prev['lat'] ?? 0.0).toDouble(), (prev['lng'] ?? 0.0).toDouble(),
+          (curr['lat'] ?? 0.0).toDouble(), (curr['lng'] ?? 0.0).toDouble()
+        );
+        
+        // Thresholds: accuracy < 40m, movement > 3m (Friendly for walking tests)
+        final double accuracy = (curr['accuracy'] ?? 100.0).toDouble();
+        if (accuracy < 40.0 && (dist > 3.0 || i == points.length - 1)) {
+          filteredPoints.add(curr);
+        }
+      }
+    }
+
     final String sourceId = "driver-route-source";
     final List<Map<String, dynamic>> segments = [];
     
-    // EDGE-BASED SEGMENTATION
-    for (int i = 1; i < points.length; i++) {
-      final prev = points[i - 1];
-      final curr = points[i];
+    // EDGE-BASED SEGMENTATION: Connect points directly to avoid gaps
+    for (int i = 1; i < filteredPoints.length; i++) {
+      final prev = filteredPoints[i - 1];
+      final curr = filteredPoints[i];
       
       final double prevLng = (prev['lng'] ?? 0.0).toDouble();
       final double prevLat = (prev['lat'] ?? 0.0).toDouble();
@@ -349,31 +382,22 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       final int prevTs = (prev['timestamp'] ?? 0) as int;
       final int currTs = (curr['timestamp'] ?? 0) as int;
       
-      // Determine color from DESTINATION point status
       final String color = (curr['color'] ?? 'GREEN').toString().toUpperCase();
-      
-      // Use standard GAP logic (60s)
       bool isGap = (currTs - prevTs) > 60000;
 
       if (!isGap) {
-        // Find existing segment of the same color to append to, or start new
-        Map<String, dynamic>? lastSegment;
         if (segments.isNotEmpty && segments.last['properties']['color'] == color) {
-          lastSegment = segments.last;
-        }
-
-        if (lastSegment != null) {
-          List coords = lastSegment['geometry']['coordinates'];
-          coords.add([currLng, currLat]);
+          final List coords = segments.last['geometry']['coordinates'];
+          if (coords.isEmpty || coords.last[0] != currLng || coords.last[1] != currLat) {
+            coords.add([currLng, currLat]);
+          }
         } else {
+          // Start NEW segment beginning exactly where the previous one ended
           segments.add({
             "type": "Feature",
             "geometry": {
               "type": "LineString",
-              "coordinates": [
-                [prevLng, prevLat],
-                [currLng, currLat]
-              ]
+              "coordinates": [[prevLng, prevLat], [currLng, currLat]]
             },
             "properties": {"color": color, "isGap": false}
           });
@@ -387,15 +411,20 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       final style = mapboxMap!.style;
       if (!_routeSourceCreated) {
         await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(featureCollection)));
+        
+        try { await style.removeStyleLayer("route-layer"); } catch(_) {}
+        try { await style.removeStyleLayer("active-route-layer"); } catch(_) {}
+
         await style.addLayer(LineLayer(
           id: "driver-route-layer", 
           sourceId: sourceId, 
           lineColor: Colors.green.toARGB32(), 
-          lineWidth: 10.0, 
+          lineWidth: 10.0, // Thicker line for easier viewing
           lineOpacity: 1.0, 
           lineCap: LineCap.ROUND, 
           lineJoin: LineJoin.ROUND
         ));
+        
         await style.setStyleLayerProperty("driver-route-layer", "line-color", [
           "match", ["get", "color"],
           "GREEN", "#00FF00",
@@ -405,6 +434,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           "BLUE", "#0000FF",
           "#00FF00"
         ]);
+
         if (mounted) setState(() => _routeSourceCreated = true);
       } else { 
         await style.setStyleSourceProperty(sourceId, "data", jsonEncode(featureCollection)); 
