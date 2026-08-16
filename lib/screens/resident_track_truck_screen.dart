@@ -182,15 +182,31 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> {
   void _updateRoutePolyline(String truckId, List<Map> points) async {
     if (mapboxMap == null || points.length < 2) return;
     
+    // 1. Numerical sort
     points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
 
     final String sourceId = "route-source-$truckId";
     final List<Map<String, dynamic>> segments = [];
 
-    // EDGE-BASED SEGMENTATION: Connect points directly to avoid gaps
-    for (int i = 1; i < points.length; i++) {
-      final prev = points[i - 1];
-      final curr = points[i];
+    // 2. SMOTHING FILTER: Reduce micro-zigzags from GPS jitter
+    final List<Map> smoothedPoints = [];
+    if (points.isNotEmpty) {
+      smoothedPoints.add(points.first);
+      for (int i = 1; i < points.length; i++) {
+        final prev = smoothedPoints.last;
+        final curr = points[i];
+        final double d = geo.Geolocator.distanceBetween(
+          (prev['lat'] ?? 0.0).toDouble(), (prev['lng'] ?? 0.0).toDouble(),
+          (curr['lat'] ?? 0.0).toDouble(), (curr['lng'] ?? 0.0).toDouble()
+        );
+        if (d > 5.0 || i == points.length - 1) smoothedPoints.add(curr);
+      }
+    }
+
+    // 3. EDGE-BASED SEGMENTATION: Connect points directly to avoid gaps
+    for (int i = 1; i < smoothedPoints.length; i++) {
+      final prev = smoothedPoints[i - 1];
+      final curr = smoothedPoints[i];
       
       final double prevLng = (prev['lng'] ?? 0.0).toDouble();
       final double prevLat = (prev['lat'] ?? 0.0).toDouble();

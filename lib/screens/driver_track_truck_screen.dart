@@ -178,8 +178,37 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           final List<Map> points = [];
           routeData.forEach((key, value) => points.add(value as Map));
           points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
-          if (mounted && points.length != _lastPoints.length) {
-            _updateRoutePolyline(points);
+          
+          if (mounted && points.isNotEmpty) {
+            // Update route polyline
+            if (points.length != _lastPoints.length) {
+               _updateRoutePolyline(points);
+            }
+            
+            // CRITICAL FIX: Update the live driver marker to the LATEST route point
+            // This ensures the marker always follows the front of the Strava line
+            final lastPoint = points.last;
+            final double lat = (lastPoint['lat'] ?? 0.0).toDouble();
+            final double lng = (lastPoint['lng'] ?? 0.0).toDouble();
+            
+            if (lat != 0 && lng != 0) {
+              final latestPos = geo.Position(
+                latitude: lat, longitude: lng,
+                timestamp: DateTime.now(), accuracy: (lastPoint['accuracy'] ?? 0.0).toDouble(),
+                altitude: 0, heading: (lastPoint['heading'] ?? 0.0).toDouble(),
+                speed: (lastPoint['speed'] ?? 0.0).toDouble(),
+                speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
+              );
+              
+              _lastLocalPos = latestPos;
+              _updateLocalDriverMarker(latestPos);
+              
+              // Smooth camera follow if locked
+              if (_isFollowLocked && mapboxMap != null) {
+                mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat))));
+              }
+            }
+
             _lastPoints = points;
           }
         }
@@ -191,7 +220,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _updateSpecialMarkers(Map data) async {
     if (_pointAnnotationManager == null) return;
     if (data['start_lat'] != null && data['start_lng'] != null) {
-      _addMarkerIfMissing("SESSION_START", Position(data['start_lng'], data['start_lat']), "START", Colors.blue);
+      _addMarkerIfMissing("SESSION_START", Position(data['start_lng'], data['start_lat']), "START POINT", Colors.blue, textDown: true);
     }
     if (data['finish_lat'] != null && data['finish_lng'] != null) {
       _addMarkerIfMissing("SESSION_FINISH", Position(data['finish_lng'], data['finish_lat']), "🏁 FINISH", Colors.black);
@@ -200,11 +229,17 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
 
   final Map<String, PointAnnotation> _specialMarkers = {};
 
-  Future<void> _addMarkerIfMissing(String id, Position pos, String label, Color color) async {
+  Future<void> _addMarkerIfMissing(String id, Position pos, String label, Color color, {bool textDown = false}) async {
     if (_specialMarkers.containsKey(id)) return;
     final marker = await _pointAnnotationManager?.create(PointAnnotationOptions(
-      geometry: Point(coordinates: pos), textField: label, textOffset: [0, -1.5],
-      textColor: color.toARGB32(), textSize: 12.0, textHaloColor: Colors.white.toARGB32(), textHaloWidth: 2.0, iconSize: 0,
+      geometry: Point(coordinates: pos), 
+      textField: label, 
+      textOffset: [0, textDown ? 1.5 : -1.5],
+      textColor: color.toARGB32(), 
+      textSize: 12.0, 
+      textHaloColor: Colors.white.toARGB32(), 
+      textHaloWidth: 2.0, 
+      iconSize: 0,
     ));
     if (marker != null) {
       _specialMarkers[id] = marker;
@@ -255,45 +290,59 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
 
     try {
       final style = mapboxMap!.style;
+      
+      // Safety check: if source doesn't exist yet but _driverSourceCreated is true, reset it.
+      if (_driverSourceCreated && !(await style.styleSourceExists(sourceId))) {
+        _driverSourceCreated = false;
+      }
+
       if (!_driverSourceCreated) {
-        await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(feature)));
+        // Double check existence to prevent error if created in a quick parallel call
+        if (!(await style.styleSourceExists(sourceId))) {
+           await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(feature)));
+        }
 
-        // 1. STATUS HALO (Large, semi-transparent)
-        await style.addLayer(CircleLayer(
-          id: "driver-live-location-halo", 
-          sourceId: sourceId, 
-          circleRadius: 18.0, 
-          circleOpacity: 0.3,
-          circleStrokeWidth: 2.0,
-          circleSortKey: 2900.0
-        ));
+        // Add layers only if they don't exist
+        if (!(await style.styleLayerExists("driver-live-location-halo"))) {
+          await style.addLayer(CircleLayer(
+            id: "driver-live-location-halo", 
+            sourceId: sourceId, 
+            circleRadius: 18.0, 
+            circleOpacity: 0.3,
+            circleStrokeWidth: 2.0,
+            circleSortKey: 2900.0
+          ));
+        }
 
-        // 2. DRIVER CORE (Identity)
-        await style.addLayer(CircleLayer(
-          id: "driver-live-location-circle", 
-          sourceId: sourceId, 
-          circleRadius: 8.0, 
-          circleColor: Colors.green.toARGB32(), 
-          circleOpacity: 1.0, 
-          circleStrokeWidth: 3.0, 
-          circleStrokeColor: Colors.white.toARGB32(), 
-          circleSortKey: 3000.0
-        ));
+        if (!(await style.styleLayerExists("driver-live-location-circle"))) {
+          await style.addLayer(CircleLayer(
+            id: "driver-live-location-circle", 
+            sourceId: sourceId, 
+            circleRadius: 8.0, 
+            circleColor: Colors.green.toARGB32(), 
+            circleOpacity: 1.0, 
+            circleStrokeWidth: 3.0, 
+            circleStrokeColor: Colors.white.toARGB32(), 
+            circleSortKey: 3000.0
+          ));
+        }
 
-        await style.addLayer(SymbolLayer(
-          id: "driver-live-location-label", 
-          sourceId: sourceId, 
-          textField: "DRIVER\n$tid", 
-          textSize: 14.0, 
-          textColor: Colors.green.toARGB32(), 
-          textHaloColor: Colors.white.toARGB32(), 
-          textHaloWidth: 2.0, 
-          textAnchor: TextAnchor.BOTTOM, 
-          textOffset: [0, -1.5], 
-          symbolSortKey: 3000.0, 
-          textAllowOverlap: true, 
-          iconAllowOverlap: true
-        ));
+        if (!(await style.styleLayerExists("driver-live-location-label"))) {
+          await style.addLayer(SymbolLayer(
+            id: "driver-live-location-label", 
+            sourceId: sourceId, 
+            textField: "DRIVER\n$tid", 
+            textSize: 14.0, 
+            textColor: Colors.green.toARGB32(), 
+            textHaloColor: Colors.white.toARGB32(), 
+            textHaloWidth: 2.0, 
+            textAnchor: TextAnchor.BOTTOM, 
+            textOffset: [0, -1.5], 
+            symbolSortKey: 3000.0, 
+            textAllowOverlap: true, 
+            iconAllowOverlap: true
+          ));
+        }
 
         // Apply expressions via style properties for compatibility
         final statusColorExpression = [
@@ -308,8 +357,10 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
         await style.setStyleLayerProperty("driver-live-location-halo", "circle-stroke-color", statusColorExpression);
 
         if (mounted) setState(() => _driverSourceCreated = true);
+        debugPrint("[DRIVER MAP] Live location source created at: ${pos.latitude}, ${pos.longitude}");
       } else {
         await style.setStyleSourceProperty(sourceId, "data", jsonEncode(feature));
+        debugPrint("[DRIVER MAP] Live location source updated: ${pos.latitude}, ${pos.longitude}");
       }
 
       if (_isFollowLocked && !_hasInitialGpsFocus) {
@@ -343,15 +394,16 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _updateRoutePolyline(List<Map> points) async {
     if (mapboxMap == null || points.length < 2) { if (points.isEmpty) _clearRoute(); return; }
     
-    // 1. Numerical sort by timestamp
+    // 1. Strict numerical sort by timestamp
     points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
 
-    // 2. Filter / Simplify points to reduce zigzagging
-    final List<Map> filteredPoints = [];
+    // 2. SMOTHING FILTER: Reduce micro-zigzags from GPS jitter
+    // Only include points that are at least 4 meters apart, OR if status changed
+    final List<Map> smoothedPoints = [];
     if (points.isNotEmpty) {
-      filteredPoints.add(points.first);
+      smoothedPoints.add(points.first);
       for (int i = 1; i < points.length; i++) {
-        final prev = filteredPoints.last;
+        final prev = smoothedPoints.last;
         final curr = points[i];
         
         final double dist = geo.Geolocator.distanceBetween(
@@ -359,10 +411,11 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           (curr['lat'] ?? 0.0).toDouble(), (curr['lng'] ?? 0.0).toDouble()
         );
         
-        // Thresholds: accuracy < 40m, movement > 3m (Friendly for walking tests)
-        final double accuracy = (curr['accuracy'] ?? 100.0).toDouble();
-        if (accuracy < 40.0 && (dist > 3.0 || i == points.length - 1)) {
-          filteredPoints.add(curr);
+        bool statusChanged = prev['status'] != curr['status'];
+        
+        // Keep point if moved > 4m, OR status changed, OR it's the latest point
+        if (dist > 4.0 || statusChanged || i == points.length - 1) {
+          smoothedPoints.add(curr);
         }
       }
     }
@@ -370,10 +423,10 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     final String sourceId = "driver-route-source";
     final List<Map<String, dynamic>> segments = [];
     
-    // EDGE-BASED SEGMENTATION: Connect points directly to avoid gaps
-    for (int i = 1; i < filteredPoints.length; i++) {
-      final prev = filteredPoints[i - 1];
-      final curr = filteredPoints[i];
+    // 3. EDGE-BASED SEGMENTATION: Connect points directly
+    for (int i = 1; i < smoothedPoints.length; i++) {
+      final prev = smoothedPoints[i - 1];
+      final curr = smoothedPoints[i];
       
       final double prevLng = (prev['lng'] ?? 0.0).toDouble();
       final double prevLat = (prev['lat'] ?? 0.0).toDouble();
@@ -383,14 +436,14 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       final int currTs = (curr['timestamp'] ?? 0) as int;
       
       final String color = (curr['color'] ?? 'GREEN').toString().toUpperCase();
+      
+      // Connection gap threshold: 1 minute
       bool isGap = (currTs - prevTs) > 60000;
 
       if (!isGap) {
         if (segments.isNotEmpty && segments.last['properties']['color'] == color) {
           final List coords = segments.last['geometry']['coordinates'];
-          if (coords.isEmpty || coords.last[0] != currLng || coords.last[1] != currLat) {
-            coords.add([currLng, currLat]);
-          }
+          coords.add([currLng, currLat]);
         } else {
           // Start NEW segment beginning exactly where the previous one ended
           segments.add({
@@ -419,7 +472,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           id: "driver-route-layer", 
           sourceId: sourceId, 
           lineColor: Colors.green.toARGB32(), 
-          lineWidth: 10.0, // Thicker line for easier viewing
+          lineWidth: 10.0,
           lineOpacity: 1.0, 
           lineCap: LineCap.ROUND, 
           lineJoin: LineJoin.ROUND
