@@ -375,9 +375,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
         if (movedFarEnough || _currentPosition == null || _isSimulationMode) {
           _distance += traveled;
           _currentPosition = pos;
-          debugPrint("[GPS ACCEPTED] LAT: ${pos.latitude}, LNG: ${pos.longitude} | Dist: ${traveled * 1000}m | Accuracy: ${pos.accuracy}m");
+          debugPrint("[GPS MASTER] ACCEPTED: ${pos.latitude}, ${pos.longitude}");
         } else {
-          debugPrint("[GPS FILTERED] Moved only ${traveled * 1000}m (Threshold: 2.5m)");
+          debugPrint("[GPS MASTER] FILTERED (Stationary): moved ${traveled * 1000}m");
         }
         
         // Auto-status logic (Only if not overridden)
@@ -697,6 +697,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
   @override
   Widget build(BuildContext context) {
+    // DIAGNOSTIC LOGGING
+    if (_currentPosition != null) {
+       debugPrint("[DASHBOARD BUILD] currentPos: ${_currentPosition!.latitude}, ${_currentPosition!.longitude}");
+    }
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: Stack(
@@ -718,6 +723,23 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ],
             );
           }),
+          // DIAGNOSTICS OVERLAY
+          Positioned(
+            top: 50, right: 10,
+            child: IgnorePointer(
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(8)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    _buildDiagRow("GPS", "${_currentPosition?.latitude.toStringAsFixed(5)}, ${_currentPosition?.longitude.toStringAsFixed(5)}"),
+                    _buildDiagRow("LAST", "${_tripRoutePoints.isNotEmpty ? _tripRoutePoints.last['lat'].toStringAsFixed(5) : '...'}, ${_tripRoutePoints.isNotEmpty ? _tripRoutePoints.last['lng'].toStringAsFixed(5) : '...'}"),
+                  ],
+                ),
+              ),
+            ),
+          ),
           // COLLAPSIBLE DEBUG OVERLAY & WALK TEST PANEL
           Positioned(
             top: 100, left: 10,
@@ -785,6 +807,19 @@ class _DriverDashboardState extends State<DriverDashboard> {
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildDiagRow(String label, String value, {Color color = Colors.white70}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text("$label: ", style: const TextStyle(color: Colors.white38, fontSize: 8)),
+          Text(value, style: TextStyle(color: color, fontSize: 8, fontWeight: FontWeight.bold)),
+        ],
+      ),
     );
   }
 

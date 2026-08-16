@@ -36,6 +36,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   CircleAnnotationManager? _circleAnnotationManager;
   
   final Map<String, PointAnnotation> _truckMarkers = {};
+  PointAnnotation? _driverMarker; // Authority moving marker
   
   List<Map> _lastPoints = [];
   bool _hasInitialGpsFocus = false;
@@ -49,8 +50,8 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   final Position _balintawakCenter = Position(121.1623, 13.9413);
 
   bool _managersReady = false;
-  bool _driverSourceCreated = false;
-  bool _routeSourceCreated = false;
+  CircleAnnotation? _liveDriverCircle;
+  CircleAnnotation? _liveDriverHalo;
 
   // NEW: Session Meta Persistence
   Map? _lastSessionData;
@@ -80,13 +81,14 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
                               widget.manualPosition!.longitude != oldWidget.manualPosition!.longitude;
       
       if (hasChanged) {
-        debugPrint("[DRIVER MAP] Manual position updated: ${widget.manualPosition!.latitude}, ${widget.manualPosition!.longitude}");
+        debugPrint("[DRIVER MARKER] Manual Position changed: ${widget.manualPosition!.latitude}, ${widget.manualPosition!.longitude}");
         setState(() {
           _lastLocalPos = widget.manualPosition;
         });
+        
+        // If we are NOT in a session, or for instant response, move marker
         _updateLocalDriverMarker(widget.manualPosition!);
         
-        // Auto-follow logic
         if (_isFollowLocked && mapboxMap != null) {
           mapboxMap?.setCamera(CameraOptions(
             center: Point(coordinates: Position(widget.manualPosition!.longitude, widget.manualPosition!.latitude)),
@@ -130,10 +132,18 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     } catch (e) {}
 
     _localGpsSubscription = geo.Geolocator.getPositionStream(
-      locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.bestForNavigation, distanceFilter: 2),
+      locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.bestForNavigation, distanceFilter: 1),
     ).listen((pos) {
-      if (widget.manualPosition != null) return; // Prioritize manual position from dashboard
+      // PRIORITY: If we have an active session, let the Route stream move the marker.
+      // If we don't have a session, use local GPS for the marker.
+      if (widget.currentSessionId != null) {
+         debugPrint("[DRIVER MAP] Local GPS ignored because session is active.");
+         return; 
+      }
+      
+      if (widget.manualPosition != null) return; 
       if (widget.isSimulation) return;
+
       if (mounted) setState(() { _lastLocalPos = pos; });
       _updateLocalDriverMarker(pos);
     });
@@ -177,38 +187,41 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           final Map routeData = data['route'] as Map;
           final List<Map> points = [];
           routeData.forEach((key, value) => points.add(value as Map));
-          points.sort((a, b) => (a['timestamp'] ?? 0).compareTo(b['timestamp'] ?? 0));
+          
+          // Strict sort by timestamp to find the FRONT of the route
+          points.sort((a, b) {
+            final num tsA = a['timestamp'] ?? 0;
+            final num tsB = b['timestamp'] ?? 0;
+            return tsA.compareTo(tsB);
+          });
           
           if (mounted && points.isNotEmpty) {
             // Update route polyline
             if (points.length != _lastPoints.length) {
                _updateRoutePolyline(points);
+               
+                debugPrint("[DRIVER MARKER] Move from Route Front: $lat, $lng");
+                final latestPos = geo.Position(
+                  latitude: lat, longitude: lng,
+                  timestamp: DateTime.now(), accuracy: (lastPoint['accuracy'] ?? 0.0).toDouble(),
+                  altitude: 0, heading: (lastPoint['heading'] ?? 0.0).toDouble(),
+                  speed: (lastPoint['speed'] ?? 0.0).toDouble(),
+                  speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
+                );
+                
+                // Only update marker from route if manualPosition is stale or missing
+                if (_lastLocalPos == null || 
+                   (geo.Geolocator.distanceBetween(_lastLocalPos!.latitude, _lastLocalPos!.longitude, lat, lng) > 10)) {
+                  _lastLocalPos = latestPos;
+                  _updateLocalDriverMarker(latestPos);
+                }
+                 
+                 // Smooth camera follow if locked
+                 if (_isFollowLocked && mapboxMap != null) {
+                   mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat))));
+                 }
+               }
             }
-            
-            // CRITICAL FIX: Update the live driver marker to the LATEST route point
-            // This ensures the marker always follows the front of the Strava line
-            final lastPoint = points.last;
-            final double lat = (lastPoint['lat'] ?? 0.0).toDouble();
-            final double lng = (lastPoint['lng'] ?? 0.0).toDouble();
-            
-            if (lat != 0 && lng != 0) {
-              final latestPos = geo.Position(
-                latitude: lat, longitude: lng,
-                timestamp: DateTime.now(), accuracy: (lastPoint['accuracy'] ?? 0.0).toDouble(),
-                altitude: 0, heading: (lastPoint['heading'] ?? 0.0).toDouble(),
-                speed: (lastPoint['speed'] ?? 0.0).toDouble(),
-                speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
-              );
-              
-              _lastLocalPos = latestPos;
-              _updateLocalDriverMarker(latestPos);
-              
-              // Smooth camera follow if locked
-              if (_isFollowLocked && mapboxMap != null) {
-                mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat))));
-              }
-            }
-
             _lastPoints = points;
           }
         }
@@ -220,9 +233,11 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _updateSpecialMarkers(Map data) async {
     if (_pointAnnotationManager == null) return;
     if (data['start_lat'] != null && data['start_lng'] != null) {
+      // Fixed Start Marker
       _addMarkerIfMissing("SESSION_START", Position(data['start_lng'], data['start_lat']), "START POINT", Colors.blue, textDown: true);
     }
     if (data['finish_lat'] != null && data['finish_lng'] != null) {
+      // Fixed Finish Marker
       _addMarkerIfMissing("SESSION_FINISH", Position(data['finish_lng'], data['finish_lat']), "🏁 FINISH", Colors.black);
     }
   }
@@ -281,87 +296,67 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
 
   Future<void> _updateLocalDriverMarker(geo.Position pos) async {
     final String sourceId = "driver-live-location-source";
+    final  Future<void> _updateLocalDriverMarker(geo.Position pos) async {
+    if (!_managersReady || _circleAnnotationManager == null || _pointAnnotationManager == null) return;
+    
+    final point = Point(coordinates: Position(pos.longitude, pos.latitude));
     final tid = (widget.focusTruckId ?? "GT-001").toUpperCase();
-    final feature = {
-      "type": "Feature", 
-      "geometry": {"type": "Point", "coordinates": [pos.longitude, pos.latitude]}, 
-      "properties": {"name": "DRIVER", "truckId": tid, "status": _currentStatus}
-    };
 
     try {
-      final style = mapboxMap!.style;
-      
-      // Safety check: if source doesn't exist yet but _driverSourceCreated is true, reset it.
-      if (_driverSourceCreated && !(await style.styleSourceExists(sourceId))) {
-        _driverSourceCreated = false;
-      }
+      if (_liveDriverCircle != null) {
+        // UPDATE EXISTING ANNOTATIONS
+        _liveDriverCircle!.geometry = point;
+        _liveDriverHalo!.geometry = point;
+        _liveDriverLabel!.geometry = point;
+        
+        // Dynamic Halo Color based on status
+        _liveDriverHalo!.circleColor = _getStatusHaloColorInt();
 
-      if (!_driverSourceCreated) {
-        // Double check existence to prevent error if created in a quick parallel call
-        if (!(await style.styleSourceExists(sourceId))) {
-           await style.addSource(GeoJsonSource(id: sourceId, data: jsonEncode(feature)));
-        }
-
-        // Add layers only if they don't exist
-        if (!(await style.styleLayerExists("driver-live-location-halo"))) {
-          await style.addLayer(CircleLayer(
-            id: "driver-live-location-halo", 
-            sourceId: sourceId, 
-            circleRadius: 18.0, 
-            circleOpacity: 0.3,
-            circleStrokeWidth: 2.0,
-            circleSortKey: 2900.0
-          ));
-        }
-
-        if (!(await style.styleLayerExists("driver-live-location-circle"))) {
-          await style.addLayer(CircleLayer(
-            id: "driver-live-location-circle", 
-            sourceId: sourceId, 
-            circleRadius: 8.0, 
-            circleColor: Colors.green.toARGB32(), 
-            circleOpacity: 1.0, 
-            circleStrokeWidth: 3.0, 
-            circleStrokeColor: Colors.white.toARGB32(), 
-            circleSortKey: 3000.0
-          ));
-        }
-
-        if (!(await style.styleLayerExists("driver-live-location-label"))) {
-          await style.addLayer(SymbolLayer(
-            id: "driver-live-location-label", 
-            sourceId: sourceId, 
-            textField: "DRIVER\n$tid", 
-            textSize: 14.0, 
-            textColor: Colors.green.toARGB32(), 
-            textHaloColor: Colors.white.toARGB32(), 
-            textHaloWidth: 2.0, 
-            textAnchor: TextAnchor.BOTTOM, 
-            textOffset: [0, -1.5], 
-            symbolSortKey: 3000.0, 
-            textAllowOverlap: true, 
-            iconAllowOverlap: true
-          ));
-        }
-
-        // Apply expressions via style properties for compatibility
-        final statusColorExpression = [
-          "match", ["get", "status"],
-          "IDLE", Colors.yellow.toARGB32(),
-          "FULL", Colors.pinkAccent.toARGB32(),
-          "FINISHED", Colors.black.toARGB32(),
-          Colors.green.toARGB32() // ACTIVE
-        ];
-
-        await style.setStyleLayerProperty("driver-live-location-halo", "circle-color", statusColorExpression);
-        await style.setStyleLayerProperty("driver-live-location-halo", "circle-stroke-color", statusColorExpression);
-
-        if (mounted) setState(() => _driverSourceCreated = true);
-        debugPrint("[DRIVER MAP] Live location source created at: ${pos.latitude}, ${pos.longitude}");
+        await _circleAnnotationManager?.update(_liveDriverCircle!);
+        await _circleAnnotationManager?.update(_liveDriverHalo!);
+        await _pointAnnotationManager?.update(_liveDriverLabel!);
+        
+        debugPrint("[DRIVER MARKER] MOVED to: ${pos.latitude}, ${pos.longitude}");
       } else {
-        await style.setStyleSourceProperty(sourceId, "data", jsonEncode(feature));
-        debugPrint("[DRIVER MAP] Live location source updated: ${pos.latitude}, ${pos.longitude}");
+        // CREATE NEW ANNOTATIONS (One-time)
+        _liveDriverHalo = await _circleAnnotationManager?.create(CircleAnnotationOptions(
+          geometry: point, circleRadius: 18.0, circleOpacity: 0.3,
+          circleColor: _getStatusHaloColorInt(),
+        ));
+        
+        _liveDriverCircle = await _circleAnnotationManager?.create(CircleAnnotationOptions(
+          geometry: point, circleRadius: 8.0, circleColor: Colors.green.toARGB32(),
+          circleStrokeWidth: 3.0, circleStrokeColor: Colors.white.toARGB32(),
+        ));
+        
+        _liveDriverLabel = await _pointAnnotationManager?.create(PointAnnotationOptions(
+          geometry: point, textField: "DRIVER\n$tid", textSize: 14.0, 
+          textColor: Colors.green.toARGB32(), textHaloColor: Colors.white.toARGB32(), 
+          textHaloWidth: 2.0, textAnchor: TextAnchor.BOTTOM, textOffset: [0, -1.5],
+          iconSize: 0,
+        ));
+        
+        debugPrint("[DRIVER MARKER] INITIALIZED at: ${pos.latitude}, ${pos.longitude}");
       }
+    } catch (e) {
+      debugPrint("[DRIVER MARKER] Movement Error: $e");
+    }
+  }
+
+  int _getStatusHaloColorInt() {
+     switch(_currentStatus) {
+       case "IDLE": return Colors.yellow.toARGB32();
+       case "FULL": return Colors.pinkAccent.toARGB32();
+       case "FINISHED": return Colors.black.toARGB32();
+       default: return Colors.green.toARGB32();
+     }
+  }
+    } catch (e) {
+      debugPrint("[DRIVER MARKER] Update Error: $e");
+    }
+    } catch (e) {
+      debugPrint("[DRIVER MARKER] Update Error: $e");
+    }
 
       if (_isFollowLocked && !_hasInitialGpsFocus) {
         await mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(pos.longitude, pos.latitude)), zoom: 16.5));
@@ -374,8 +369,10 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
 
   void _updateSingleTruckMarker(String id, Map data) {
     if (!_managersReady || _pointAnnotationManager == null) return;
-    final String truckId = (data['truck_id'] ?? id).toString();
-    if (widget.focusTruckId == truckId) return; 
+    final String truckId = (data['truck_id'] ?? id).toString().toUpperCase();
+    final String targetId = (widget.focusTruckId ?? "GT-001").toUpperCase();
+    if (truckId == targetId) return; // Hide current truck from truck list marker stream
+
     final double lat = (data['latitude'] ?? 0.0).toDouble();
     final double lng = (data['longitude'] ?? 0.0).toDouble();
     if (lat == 0.0 || lng == 0.0) return;
@@ -530,7 +527,11 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
           ),
           Positioned(top: 60, right: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)), child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text("GPS: ${_lastLocalPos != null ? 'LOCKED' : 'SEARCHING...'}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-            if (_lastLocalPos != null) ...[Text("LAT: ${_lastLocalPos!.latitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.green, fontSize: 9)), Text("LNG: ${_lastLocalPos!.longitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.green, fontSize: 9)), Text("ACC: ${_lastLocalPos!.accuracy.toStringAsFixed(1)}m", style: const TextStyle(color: Colors.white70, fontSize: 8))],
+            if (_lastLocalPos != null) ...[
+              Text("LATEST: ${_lastLocalPos!.latitude.toStringAsFixed(6)}, ${_lastLocalPos!.longitude.toStringAsFixed(6)}", style: const TextStyle(color: Colors.greenAccent, fontSize: 9)), 
+              Text("START: ${(_tripRoutePoints.isNotEmpty ? _tripRoutePoints.first['lat'] : '...').toStringAsFixed(4)}, ${(_tripRoutePoints.isNotEmpty ? _tripRoutePoints.first['lng'] : '...').toStringAsFixed(4)}", style: const TextStyle(color: Colors.blueAccent, fontSize: 8)),
+              Text("ACC: ${_lastLocalPos!.accuracy.toStringAsFixed(1)}m", style: const TextStyle(color: Colors.white70, fontSize: 8))
+            ],
             Text("MAP: ${mapboxMap != null ? 'READY' : 'LOADING...'}", style: const TextStyle(color: Colors.white, fontSize: 10)),
             Text("STATUS: $_currentStatus", style: TextStyle(color: _getStatusColor(_currentStatus), fontSize: 10, fontWeight: FontWeight.w900)),
           ]))),
