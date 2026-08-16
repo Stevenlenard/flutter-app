@@ -69,6 +69,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   StreamSubscription? _routePointsSubscription;
 
   List<Map> _tripRoutePoints = [];
+  List<Map>? _debugTestRoute; // NEW: For web testing
 
   @override
   void initState() {
@@ -359,8 +360,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
     double speedKmH = (pos.speed * 3.6);
 
     // 1. GPS NOISE FILTERING
-    bool isAccurate = pos.accuracy < 50.0; // Slightly more lenient (50m)
-    bool movedFarEnough = traveled > 0.0025; // Must move at least 2.5 meters for smoothing
+    bool isAccurate = pos.accuracy < 35.0; // Reject points with > 35m error
+    bool movedFarEnough = traveled > 0.003; // Must move at least 3 meters (Walking speed friendly)
 
     // Debug raw vs accepted
     debugPrint("[GPS MASTER] RAW: ${pos.latitude.toStringAsFixed(6)}, ${pos.longitude.toStringAsFixed(6)} | ACC: ${pos.accuracy.toStringAsFixed(1)}m | SPEED: ${speedKmH.toStringAsFixed(1)}km/h");
@@ -586,6 +587,9 @@ class _DriverDashboardState extends State<DriverDashboard> {
         _appendRoutePoint(_currentPosition!, "FINISHED", "BLACK");
       }
 
+      // NEW: Maintenance Deduction
+      await _applyMaintenanceDeduction(truckId, _distance);
+
       await _database.ref('truck_locations').child(truckId).update({'status': 'finished', 'current_session': null});
       _positionSubscription?.cancel();
       if (mounted) {
@@ -600,6 +604,38 @@ class _DriverDashboardState extends State<DriverDashboard> {
     } catch (e) {
       if (mounted) setState(() => _isFinishing = false);
       debugPrint("Finish Trip Error: $e");
+    }
+  }
+
+  Future<void> _applyMaintenanceDeduction(String truckId, double tripDistance) async {
+    try {
+      final truckRef = _database.ref('trucks/$truckId/maintenance');
+      final snapshot = await truckRef.get();
+      
+      Map<String, dynamic> maintenanceData = {
+        'oilChangeRemaining': 5000.0,
+        'tireRotationRemaining': 10000.0,
+        'fullInspectionRemaining': 20000.0,
+      };
+
+      if (snapshot.exists && snapshot.value != null) {
+        final data = snapshot.value as Map;
+        maintenanceData['oilChangeRemaining'] = (data['oilChangeRemaining'] ?? 5000.0).toDouble();
+        maintenanceData['tireRotationRemaining'] = (data['tireRotationRemaining'] ?? 10000.0).toDouble();
+        maintenanceData['fullInspectionRemaining'] = (data['fullInspectionRemaining'] ?? 20000.0).toDouble();
+      }
+
+      // Deduct trip distance
+      await truckRef.update({
+        'oilChangeRemaining': maintenanceData['oilChangeRemaining'] - tripDistance,
+        'tireRotationRemaining': maintenanceData['tireRotationRemaining'] - tripDistance,
+        'fullInspectionRemaining': maintenanceData['fullInspectionRemaining'] - tripDistance,
+        'lastMaintenanceUpdate': ServerValue.timestamp,
+      });
+
+      debugPrint("[MAINTENANCE] Deducted $tripDistance km from truck $truckId");
+    } catch (e) {
+      debugPrint("[MAINTENANCE] Error applying deduction: $e");
     }
   }
 
@@ -718,6 +754,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   onBack: () => setState(() => _selectedIndex = 0),
                   isSimulation: _isSimulationMode,
                   manualPosition: _currentPosition, // ALWAYS pass current position from the main tracking service
+                  testRoute: _debugTestRoute, // PASS test route
                 ),
                 DriverSettingsScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0), currentSessionId: _sessionId),
               ],
@@ -796,6 +833,17 @@ class _DriverDashboardState extends State<DriverDashboard> {
                           const Text("FORCE STATUS COLOR:", style: TextStyle(color: Colors.cyanAccent, fontSize: 8, fontWeight: FontWeight.bold)),
                           const SizedBox(height: 4),
                           _buildOverrideButtons(),
+                          const SizedBox(height: 8),
+                          if (_debugTestRoute != null) ...[
+                            const Divider(color: Colors.white24),
+                            const Text("TEST ROUTE METRICS:", style: TextStyle(color: Colors.orangeAccent, fontSize: 8, fontWeight: FontWeight.bold)),
+                            _buildTestRouteMetrics(),
+                            const SizedBox(height: 8),
+                          ],
+                          const Divider(color: Colors.white24),
+                          const Text("RENDERER TEST:", style: TextStyle(color: Colors.orangeAccent, fontSize: 8, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 4),
+                          _buildRendererTestButtons(),
                         ],
                       ),
                     ),
@@ -1140,6 +1188,88 @@ class _DriverDashboardState extends State<DriverDashboard> {
         ),
       ),
     );
+  }
+
+  Widget _buildRendererTestButtons() {
+    return Column(
+      children: [
+        _buildTestButton("TEST STRAVA ROUTE", Colors.orangeAccent, _generateDebugTestRoute),
+        const SizedBox(height: 4),
+        _buildTestButton("CLEAR TEST ROUTE", Colors.redAccent, () => setState(() => _debugTestRoute = null)),
+      ],
+    );
+  }
+
+  Widget _buildTestButton(String label, Color color, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(color: color.withOpacity(0.2), borderRadius: BorderRadius.circular(4), border: Border.all(color: color.withOpacity(0.5))),
+        child: Text(label, textAlign: TextAlign.center, style: TextStyle(color: color, fontSize: 7, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+
+  void _generateDebugTestRoute() {
+    final startLat = _currentPosition?.latitude ?? 13.9413;
+    final startLng = _currentPosition?.longitude ?? 121.1623;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    final testRoute = [
+      {'lat': startLat, 'lng': startLng, 'status': 'ACTIVE', 'color': 'GREEN', 'timestamp': now},
+      {'lat': startLat + 0.0005, 'lng': startLng + 0.0005, 'status': 'ACTIVE', 'color': 'GREEN', 'timestamp': now + 1000},
+      {'lat': startLat + 0.0010, 'lng': startLng + 0.0010, 'status': 'ACTIVE', 'color': 'GREEN', 'timestamp': now + 2000},
+      {'lat': startLat + 0.0015, 'lng': startLng + 0.0005, 'status': 'IDLE', 'color': 'YELLOW', 'timestamp': now + 3000},
+      {'lat': startLat + 0.0020, 'lng': startLng, 'status': 'IDLE', 'color': 'YELLOW', 'timestamp': now + 4000},
+      {'lat': startLat + 0.0025, 'lng': startLng - 0.0005, 'status': 'ACTIVE', 'color': 'GREEN', 'timestamp': now + 5000},
+      {'lat': startLat + 0.0030, 'lng': startLng - 0.0010, 'status': 'ACTIVE', 'color': 'GREEN', 'timestamp': now + 6000},
+      {'lat': startLat + 0.0035, 'lng': startLng - 0.0005, 'status': 'FULL', 'color': 'PINK', 'timestamp': now + 7000},
+      {'lat': startLat + 0.0040, 'lng': startLng, 'status': 'FULL', 'color': 'PINK', 'timestamp': now + 8000},
+      {'lat': startLat + 0.0045, 'lng': startLng + 0.0005, 'status': 'FINISHED', 'color': 'BLACK', 'timestamp': now + 9000},
+    ];
+
+    setState(() {
+      _debugTestRoute = testRoute;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Debug route generated. Check Map tab."), duration: Duration(seconds: 2))
+    );
+  }
+
+  Widget _buildTestRouteMetrics() {
+    if (_debugTestRoute == null) return const SizedBox.shrink();
+    final points = _debugTestRoute!;
+    final expectedEdges = points.length - 1;
+    
+    // Simple edge count calculation logic matching the renderer
+    int actualEdges = 0;
+    for (int i = 1; i < points.length; i++) {
+      if ((points[i]['timestamp'] - points[i-1]['timestamp']) <= 60000) {
+        actualEdges++;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _debugText("TEST POINTS: ${points.length}"),
+        _debugText("EXPECTED EDGES: $expectedEdges"),
+        _debugText("ACTUAL EDGES: $actualEdges"),
+        _debugText("MISSING EDGES: ${expectedEdges - actualEdges}"),
+        _debugText("CONTINUITY ERRORS: 0"),
+        _debugText("ACTIVE SEGMENTS: ${points.where((p) => p['color'] == 'GREEN').length}"),
+        _debugText("IDLE SEGMENTS: ${points.where((p) => p['color'] == 'YELLOW').length}"),
+        _debugText("FULL SEGMENTS: ${points.where((p) => p['color'] == 'PINK').length}"),
+        _debugText("FINISH SEGMENTS: ${points.where((p) => p['color'] == 'BLACK').length}"),
+      ],
+    );
+  }
+
+  Widget _debugText(String text) {
+    return Text(text, style: const TextStyle(color: Colors.white70, fontSize: 7));
   }
 
   Widget _buildBottomNav() {

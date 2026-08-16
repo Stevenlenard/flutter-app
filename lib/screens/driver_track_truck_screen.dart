@@ -13,6 +13,7 @@ class DriverTrackTruckScreen extends StatefulWidget {
   final String? focusTruckId;
   final geo.Position? manualPosition;
   final bool isSimulation;
+  final List<Map>? testRoute; // NEW: For web testing
   
   const DriverTrackTruckScreen({
     super.key, 
@@ -22,6 +23,7 @@ class DriverTrackTruckScreen extends StatefulWidget {
     this.focusTruckId,
     this.manualPosition,
     this.isSimulation = false,
+    this.testRoute,
   });
 
   @override
@@ -36,7 +38,6 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   CircleAnnotationManager? _circleAnnotationManager;
   
   final Map<String, PointAnnotation> _truckMarkers = {};
-  
   List<Map> _lastPoints = [];
   StreamSubscription? _truckSubscription;
   StreamSubscription? _routeSubscription;
@@ -51,6 +52,11 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   bool _driverSourceCreated = false;
   bool _routeSourceCreated = false;
   bool _specialMarkersCreated = false;
+  
+  // LIVE DRIVER MARKERS (Annotations)
+  CircleAnnotation? _liveDriverCircle;
+  CircleAnnotation? _liveDriverHalo;
+  PointAnnotation? _liveDriverLabel;
 
   // NEW: Session Meta Persistence
   Map? _lastSessionData;
@@ -81,8 +87,6 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       
       if (hasChanged) {
         if (mounted) setState(() { _lastLocalPos = widget.manualPosition; });
-        
-        // Dashboard Authority: Move the marker immediately
         _updateLocalDriverMarker(widget.manualPosition!);
         
         if (_isFollowLocked && mapboxMap != null) {
@@ -90,6 +94,37 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
             center: Point(coordinates: Position(widget.manualPosition!.longitude, widget.manualPosition!.latitude)),
           ));
         }
+      }
+    }
+
+    if (widget.testRoute != oldWidget.testRoute) {
+      if (widget.testRoute != null) {
+        debugPrint("[DRIVER MAP] TEST ROUTE ACTIVE: ${widget.testRoute!.length} points");
+        _updateRoutePolyline(widget.testRoute!);
+        
+        // Generate fake special markers for test route
+        final first = widget.testRoute!.first;
+        final last = widget.testRoute!.last;
+        _updateSpecialMarkers({
+          'start_lat': first['lat'], 'start_lng': first['lng'],
+          'finish_lat': last['status'] == 'FINISHED' ? last['lat'] : null,
+          'finish_lng': last['status'] == 'FINISHED' ? last['lng'] : null,
+        });
+
+        // Also move live marker to end of test route
+        final latestPos = geo.Position(
+          latitude: (last['lat'] ?? 0.0).toDouble(), 
+          longitude: (last['lng'] ?? 0.0).toDouble(),
+          timestamp: DateTime.now(), accuracy: 5.0,
+          altitude: 0, heading: 0, speed: 0,
+          speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
+        );
+        _lastLocalPos = latestPos;
+        _updateLocalDriverMarker(latestPos);
+      } else if (widget.currentSessionId == null) {
+        _clearRoute();
+      } else {
+        _listenToRoute();
       }
     }
 
@@ -130,10 +165,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     _localGpsSubscription = geo.Geolocator.getPositionStream(
       locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.bestForNavigation, distanceFilter: 1),
     ).listen((pos) {
-      // If we have an active session, the Route listener acts as the leader for the path.
-      // But we still update marker for better real-time responsiveness if not in simulation.
       if (widget.isSimulation) return;
-      
       if (mounted) setState(() { _lastLocalPos = pos; });
       _updateLocalDriverMarker(pos);
     });
@@ -168,6 +200,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     if (widget.currentSessionId == null) return;
     _routeSubscription?.cancel();
     _routeSubscription = _database.ref('driver_routes/${widget.currentSessionId}').onValue.listen((event) {
+      if (widget.testRoute != null) return; // Skip if test route is active
       if (event.snapshot.exists && event.snapshot.value != null) {
         final Map data = event.snapshot.value as Map;
         _lastSessionData = data;
@@ -188,35 +221,30 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
               _updateRoutePolyline(points);
             }
             
-            // AUTHORITY: Move the green circle to the FRONT of the trail
             final lastPoint = points.last;
-            final double routeLat = (lastPoint['lat'] ?? 0.0).toDouble();
-            final double routeLng = (lastPoint['lng'] ?? 0.0).toDouble();
+            final double lat = (lastPoint['lat'] ?? 0.0).toDouble();
+            final double lng = (lastPoint['lng'] ?? 0.0).toDouble();
             
-            if (routeLat != 0 && routeLng != 0) {
-              final latestPosFromRoute = geo.Position(
-                latitude: routeLat, longitude: routeLng,
+            if (lat != 0 && lng != 0) {
+              final latestPos = geo.Position(
+                latitude: lat, longitude: lng,
                 timestamp: DateTime.now(), accuracy: (lastPoint['accuracy'] ?? 0.0).toDouble(),
                 altitude: 0, heading: (lastPoint['heading'] ?? 0.0).toDouble(),
                 speed: (lastPoint['speed'] ?? 0.0).toDouble(),
                 speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
               );
               
-              debugPrint("[DRIVER MARKER] Path Front Update: $routeLat, $routeLng");
-              _lastLocalPos = latestPosFromRoute;
-              _updateLocalDriverMarker(latestPosFromRoute);
-
+              _lastLocalPos = latestPos;
+              _updateLocalDriverMarker(latestPos);
+              
               if (_isFollowLocked && mapboxMap != null) {
-                mapboxMap?.setCamera(CameraOptions(
-                  center: Point(coordinates: Position(routeLng, routeLat)),
-                ));
+                mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: Position(lng, lat))));
               }
             }
-            
             _lastPoints = points;
           }
         }
-        _updateSpecialMarkers(data);
+        if (_managersReady) _updateSpecialMarkers(data);
       }
     });
   }
@@ -234,14 +262,18 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
       await mapboxMap?.location.updateSettings(LocationComponentSettings(enabled: false, pulsingEnabled: false));
     } catch (e) {}
     await mapboxMap?.setCamera(CameraOptions(center: Point(coordinates: _balintawakCenter), zoom: 14.5));
-    
     try {
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 800));
       _pointAnnotationManager = await mapboxMap!.annotations.createPointAnnotationManager();
       _circleAnnotationManager = await mapboxMap!.annotations.createCircleAnnotationManager();
     } catch (e) {}
-    
     if (!mounted) return;
+    _truckMarkers.clear();
+    
+    _liveDriverCircle = null;
+    _liveDriverHalo = null;
+    _liveDriverLabel = null;
+
     setState(() => _managersReady = true);
     
     if (_lastLocalPos != null) _updateLocalDriverMarker(_lastLocalPos!);
@@ -340,6 +372,15 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     }
   }
 
+  int _getStatusHaloColorInt() {
+     switch(_currentStatus) {
+       case "IDLE": return Colors.yellow.toARGB32();
+       case "FULL": return Colors.pinkAccent.toARGB32();
+       case "FINISHED": return Colors.black.toARGB32();
+       default: return Colors.green.toARGB32();
+     }
+  }
+
   void _updateSpecialMarkers(Map data) async {
     if (mapboxMap == null) return;
     final String sourceId = "driver-special-markers-source";
@@ -375,7 +416,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
             circleRadius: 6.0, circleStrokeWidth: 2.0, circleStrokeColor: Colors.white.toARGB32(),
           ));
           await style.setStyleLayerProperty("driver-special-circles", "circle-color", 
-            ["match", ["get", "type"], "START", Colors.blue.toARGB32(), Colors.black.toARGB32()]
+            ["match", ["get", "type"], "START", "#2196F3", "#000000"] // Blue for START, Black for FINISH
           );
         }
         if (!(await style.styleLayerExists("driver-special-labels"))) {
@@ -387,7 +428,7 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
             ["match", ["get", "type"], "START", ["literal", [0, 1.5]], ["literal", [0, -1.5]]]
           );
           await style.setStyleLayerProperty("driver-special-labels", "text-color", 
-            ["match", ["get", "type"], "START", Colors.blue.toARGB32(), Colors.black.toARGB32()]
+            ["match", ["get", "type"], "START", "#2196F3", "#000000"]
           );
         }
         if (mounted) setState(() => _specialMarkersCreated = true);
@@ -421,10 +462,8 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
   void _updateRoutePolyline(List<Map> points) async {
     if (mapboxMap == null || points.length < 2) { if (points.isEmpty) _clearRoute(); return; }
     
-    // 1. Numerical sort by timestamp
     points.sort((a, b) => (a['timestamp'] as num).compareTo(b['timestamp'] as num));
 
-    // 2. SMOTHING FILTER
     final List<Map> smoothedPoints = [];
     if (points.isNotEmpty) {
       smoothedPoints.add(points.first);
@@ -442,7 +481,6 @@ class _DriverTrackTruckScreenState extends State<DriverTrackTruckScreen> {
     final String sourceId = "driver-route-source";
     final List<Map<String, dynamic>> segments = [];
     
-    // 3. EDGE-BASED SEGMENTATION
     for (int i = 1; i < smoothedPoints.length; i++) {
       final prev = smoothedPoints[i - 1];
       final curr = smoothedPoints[i];
